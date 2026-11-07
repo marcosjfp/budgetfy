@@ -186,6 +186,8 @@ The repo is ready for Vercel: `vercel.json` builds the Vite frontend into `dist/
    - `JWT_SECRET`: at least 32 random characters (`openssl rand -base64 48`)
    - `FIREBASE_PROJECT_ID`
    - `TRUST_PROXY=1`
+   - `VITE_FIREBASE_API_KEY`: Firebase web key, for Google sign-in (also add the site's domain in Firebase → Authentication → Settings → Authorized domains)
+   - `VITE_AMPLITUDE_API_KEY`: optional; analytics only loads after the user accepts the consent banner, and session replays mask all text
 3. Run `npm run db:push` once against the database, then push to `main` to deploy.
 
 `CORS_ORIGINS` is optional: the API always accepts requests from the site serving it. Rate limits are kept in memory per function instance, so on serverless they are weaker; use a shared store (for example Upstash Redis) before real users.

@@ -7,6 +7,7 @@ import { Toaster } from './components/ui/Toast';
 import { I18nProvider } from './i18n';
 import './index.css';
 import { initAnalyticsWhenIdle } from './analytics';
+import ConsentBanner from './components/ConsentBanner';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -16,11 +17,12 @@ createRoot(document.getElementById('root')!).render(
         <ErrorBoundary>
           <App />
         </ErrorBoundary>
+        <ConsentBanner />
         <Toaster />
       </MotionConfig>
     </I18nProvider>
   </StrictMode>,
 );
 
-// Analytics (Amplitude) is loaded lazily after the first render so it doesn't block startup.
+// Analytics (Amplitude) loads lazily after the first render, and only if the user accepted it.
 initAnalyticsWhenIdle();

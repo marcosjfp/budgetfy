@@ -4,6 +4,7 @@ import { SUPPORTED_CURRENCIES, useI18n, type Currency } from '../i18n';
 import type { Theme } from '../hooks/useTheme';
 import { useCurrencyNames } from '../hooks/useCurrencyNames';
 import { describeError } from '../api';
+import { analyticsAvailable, setAnalyticsConsent, useAnalyticsConsent } from '../analytics';
 import LanguageSwitcher from './LanguageSwitcher';
 import { Button, FieldsetLabel, Modal, SegmentedControl, SelectField, TextField, toast } from './ui';
 
@@ -24,6 +25,8 @@ export default function PreferencesModal({ open, onClose, theme, onThemeChange, 
   const { t, currency, setCurrency, formatCurrency } = useI18n();
   const langLabelId = useId();
   const themeLabelId = useId();
+  const analyticsLabelId = useId();
+  const analyticsConsent = useAnalyticsConsent();
   const [name, setName] = useState(displayName);
   const [nameError, setNameError] = useState<string | undefined>();
   const [savingName, setSavingName] = useState(false);
@@ -131,6 +134,24 @@ export default function PreferencesModal({ open, onClose, theme, onThemeChange, 
             ]}
           />
         </div>
+
+        {analyticsAvailable && (
+          <div className="flex flex-col gap-1.5">
+            <FieldsetLabel id={analyticsLabelId}>{t('prefs.analytics')}</FieldsetLabel>
+            <SegmentedControl<'granted' | 'denied'>
+              fullWidth
+              label={t('prefs.analytics')}
+              labelledBy={analyticsLabelId}
+              value={analyticsConsent === 'granted' ? 'granted' : 'denied'}
+              onChange={setAnalyticsConsent}
+              options={[
+                { value: 'granted', label: t('prefs.analyticsOn') },
+                { value: 'denied', label: t('prefs.analyticsOff') },
+              ]}
+            />
+            <p className="text-xs text-fg-muted">{t('prefs.analyticsHint')}</p>
+          </div>
+        )}
       </div>
     </Modal>
   );
