@@ -12,7 +12,10 @@ export function computeGroupStats(group: Group, expenses: Expense[], members: Gr
   const totalSpent = currentPeriodExpenses.reduce((sum, e) => sum + e.amount, 0);
   const userSpent = currentPeriodExpenses.filter((e) => e.paidBy === uid).reduce((sum, e) => sum + e.amount, 0);
   const userShare = currentPeriodExpenses.reduce((sum, e) => {
-    if (!e.splitType || e.splitType === 'equal') return sum + (members.length > 0 ? e.amount / members.length : 0);
+    if (!e.splitType || e.splitType === 'equal') {
+      const sharers = e.participants?.length ? e.participants : members.map((m) => m.uid);
+      return sum + (sharers.includes(uid) ? e.amount / sharers.length : 0);
+    }
     if (e.splitType === 'percentage') return sum + (e.amount * (e.splitDetails?.[uid] || 0)) / 100;
     if (e.splitType === 'exact') return sum + (e.splitDetails?.[uid] || 0);
     return sum;

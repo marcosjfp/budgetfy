@@ -48,6 +48,8 @@ export interface Expense {
   createdAt: AppTimestamp;
   splitType: SplitType;
   splitDetails?: Record<string, number>;
+  /** Equal splits: who shares the expense (frozen at creation). Missing on old expenses. */
+  participants?: string[] | null;
   isRecurring?: boolean;
   recurrenceId?: string;
 }

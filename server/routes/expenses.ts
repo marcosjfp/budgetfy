@@ -1,5 +1,5 @@
 import { Router, Response, NextFunction } from 'express';
-import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db, DbInsert, DbUpdate } from '../db.js';
 import { expenses, groupMembers } from '../schema.js';
 import { asyncHandler, HttpError } from '../errors.js';
@@ -31,6 +31,17 @@ function groupIdOf(req: AuthRequest): string {
 }
 
 /** Helper: serialise expense row */
+/** Current member ids of a group, sorted: the participants frozen onto new equal-split expenses. */
+async function currentMemberIds(groupId: string): Promise<string[]> {
+  const rows = await db.select({ userId: groupMembers.userId }).from(groupMembers).where(eq(groupMembers.groupId, groupId));
+  return [...new Set(rows.map((r) => r.userId))].sort();
+}
+
+/** SQL for "keep existing participants, otherwise freeze the current members" (when switching to equal). */
+function freezeParticipants(memberIds: string[]) {
+  return sql`coalesce(${expenses.participants}, ${JSON.stringify(memberIds)}::jsonb)`;
+}
+
 function serializeExpense(exp: typeof expenses.$inferSelect) {
   return {
     ...exp,
@@ -71,6 +82,7 @@ router.post(
       throw new HttpError(400, 'PAYER_NOT_MEMBER', 'The payer must be a member of this group');
     }
 
+    const memberIds = await currentMemberIds(groupId);
     const values = payload.map((exp) => ({
       groupId, // always from the URL, never from the body
       amount: String(exp.amount),
@@ -82,6 +94,7 @@ router.post(
       status: exp.status || 'paid',
       splitType: exp.splitType || 'equal',
       splitDetails: exp.splitDetails || {},
+      participants: (exp.splitType || 'equal') === 'equal' ? memberIds : null,
       isRecurring: exp.isRecurring || false,
       recurrenceId: exp.recurrenceId || null,
     }));
@@ -110,6 +123,7 @@ router.patch(
     if (updates.status !== undefined) set.status = updates.status;
     if (updates.splitType !== undefined) set.splitType = updates.splitType;
     if (updates.splitDetails !== undefined) set.splitDetails = updates.splitDetails ?? {};
+    if (updates.splitType === 'equal') set.participants = freezeParticipants(await currentMemberIds(groupId));
 
     const conditions = [eq(expenses.groupId, groupId), eq(expenses.recurrenceId, recurrenceId)];
     if (fromDate) conditions.push(gte(expenses.date, fromDate));
@@ -150,6 +164,7 @@ router.patch(
     if (updates.status !== undefined) set.status = updates.status;
     if (updates.splitType !== undefined) set.splitType = updates.splitType;
     if (updates.splitDetails !== undefined) set.splitDetails = updates.splitDetails ?? {};
+    if (updates.splitType === 'equal') set.participants = freezeParticipants(await currentMemberIds(groupId));
 
     const where = and(eq(expenses.id, expId), eq(expenses.groupId, groupId));
     const [updated] =

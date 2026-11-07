@@ -63,7 +63,7 @@ router.post(
       throw err;
     }
 
-    const token = signLocalToken({ uid: user.uid, email: user.email ?? undefined });
+    const token = signLocalToken({ uid: user.uid, email: user.email ?? undefined, ver: user.tokenVersion ?? 0 });
     res.status(201).json({ token, user: publicUser(user) });
   }),
 );
@@ -82,7 +82,7 @@ router.post(
       throw new HttpError(401, 'INVALID_CREDENTIALS', 'Invalid email or password.');
     }
 
-    const token = signLocalToken({ uid: user.uid, email: user.email ?? undefined });
+    const token = signLocalToken({ uid: user.uid, email: user.email ?? undefined, ver: user.tokenVersion ?? 0 });
     res.json({ token, user: publicUser(user) });
   }),
 );
@@ -144,7 +144,7 @@ router.post(
       }
     }
 
-    const token = signLocalToken({ uid: user.uid, email: user.email ?? undefined });
+    const token = signLocalToken({ uid: user.uid, email: user.email ?? undefined, ver: user.tokenVersion ?? 0 });
     res.json({ token, user: publicUser(user) });
   }),
 );

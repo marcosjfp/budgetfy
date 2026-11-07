@@ -1,6 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import admin from 'firebase-admin';
 import jwt from 'jsonwebtoken';
+import { eq } from 'drizzle-orm';
+import { db } from '../db.js';
+import { users } from '../schema.js';
 import { config } from '../config.js';
 import { HttpError } from '../errors.js';
 
@@ -20,10 +23,12 @@ export interface AuthRequest extends Request {
 interface LocalTokenPayload {
   uid: string;
   email?: string;
+  /** users.token_version when the token was issued (missing on older tokens = 0). */
+  ver?: number;
 }
 
 export function signLocalToken(payload: LocalTokenPayload): string {
-  return jwt.sign({ uid: payload.uid, email: payload.email }, config.jwt.secret, {
+  return jwt.sign({ uid: payload.uid, email: payload.email, ver: payload.ver ?? 0 }, config.jwt.secret, {
     algorithm: config.jwt.algorithm,
     expiresIn: config.jwt.expiresIn as jwt.SignOptions['expiresIn'],
     issuer: config.jwt.issuer,
@@ -41,7 +46,11 @@ function verifyLocalToken(token: string): LocalTokenPayload {
   if (typeof decoded !== 'object' || typeof decoded.uid !== 'string' || !decoded.uid) {
     throw new Error('Malformed token payload');
   }
-  return { uid: decoded.uid, email: typeof decoded.email === 'string' ? decoded.email : undefined };
+  return {
+    uid: decoded.uid,
+    email: typeof decoded.email === 'string' ? decoded.email : undefined,
+    ver: typeof decoded.ver === 'number' ? decoded.ver : 0,
+  };
 }
 
 /** Verifies a Firebase ID token (Google sign-in). Throws if Firebase isn't configured or the token is invalid. */
@@ -69,6 +78,11 @@ export async function requireAuth(req: AuthRequest, _res: Response, next: NextFu
   try {
     if (header?.alg === config.jwt.algorithm) {
       const payload = verifyLocalToken(token);
+      // Reject tokens from before the last "sign out of other devices" (or of a deleted account).
+      const [account] = await db.select({ tokenVersion: users.tokenVersion }).from(users).where(eq(users.uid, payload.uid)).limit(1);
+      if (!account || account.tokenVersion !== payload.ver) {
+        return next(new HttpError(401, 'INVALID_TOKEN', 'Session was signed out'));
+      }
       req.uid = payload.uid;
       req.authEmail = payload.email ?? null;
       req.authEmailVerified = false;

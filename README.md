@@ -104,6 +104,10 @@ ALTER TABLE "groups" ADD COLUMN IF NOT EXISTS "currency" text;
 ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "preferences" jsonb DEFAULT '{}'::jsonb;
 ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "firebase_uid" text;
 ALTER TABLE "users" ADD CONSTRAINT "users_firebase_uid_unique" UNIQUE ("firebase_uid");
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "token_version" integer NOT NULL DEFAULT 0;
+ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "participants" jsonb;
+ALTER TABLE "group_members" ADD CONSTRAINT "group_members_group_user_unique" UNIQUE ("group_id", "user_id");
+CREATE TABLE IF NOT EXISTS "rate_limits" ("key" text PRIMARY KEY, "hits" integer NOT NULL, "reset_at" timestamptz NOT NULL);
 CREATE TABLE IF NOT EXISTS "settlements" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
   "group_id" uuid NOT NULL,
@@ -159,7 +163,9 @@ New error codes: `SETTLEMENT_NOT_FOUND`, `INVALID_SETTLEMENT`. Group settings (`
 - **Authentication**: Budgetfy JWTs are HS256-pinned with issuer/audience checks and a configurable lifetime (`JWT_EXPIRES_IN`); Firebase ID tokens are verified with `firebase-admin`. Passwords are hashed with bcrypt (cost `BCRYPT_ROUNDS`, default 12) and must be 8+ characters with a letter and a number (max 72 bytes).
 - **Authorization**: every `/api/groups/:id/...` route (including expenses) checks group membership; settings are admin-only and deletion is owner-only; member management is admin-only and the owner cannot be demoted or removed.
 - **Input validation**: all bodies and route params are validated with [zod](https://zod.dev/); unknown fields are stripped (no mass assignment).
-- **HTTP hardening**: `helmet` security headers, CORS restricted to `CORS_ORIGINS`, 100 kB JSON body limit, rate limiting (`express-rate-limit`) globally and stricter on login/register/email lookups. Set `TRUST_PROXY` behind a load balancer so limits apply per client IP.
+- **HTTP hardening**: `helmet` security headers, CORS restricted to `CORS_ORIGINS`, 100 kB JSON body limit, rate limiting (`express-rate-limit`) globally and stricter on login/register/email lookups. The strict limits keep their counters in Postgres (`rate_limits` table) so they hold across serverless instances. Set `TRUST_PROXY` behind a load balancer so limits apply per client IP.
+- **Sessions**: login tokens carry `users.token_version`; **Preferences → Sign out of other devices** bumps it, which invalidates every other session.
+- **Equal splits**: each equal-split expense stores its `participants` when created, so adding or removing members later doesn't change past balances.
 - **Errors**: a central handler returns `{ "error": string, "code": string }` (e.g. `VALIDATION_ERROR`, `INVALID_CREDENTIALS`, `NOT_A_MEMBER`, `RATE_LIMITED`) and never leaks stack traces or database errors.
 - **`drop.ts`** wipes the database schema. It refuses to run with `NODE_ENV=production`, requires `--yes`, and only targets localhost unless `ALLOW_REMOTE_DROP=true`.
 - **Firestore**: the app does not use Firestore; `firestore.rules` is locked down (members-only reads, no self-joining arbitrary groups).
@@ -193,4 +199,6 @@ The repo is ready for Vercel: `vercel.json` builds the Vite frontend into `dist/
    - `VITE_AMPLITUDE_API_KEY`: optional; analytics only loads after the user accepts the consent banner, and session replays mask all text
 3. Run `npm run db:push` once against the database, then push to `main` to deploy.
 
-`CORS_ORIGINS` is optional: the API always accepts requests from the site serving it. Rate limits are kept in memory per function instance, so on serverless they are weaker; use a shared store (for example Upstash Redis) before real users.
+`CORS_ORIGINS` is optional: the API always accepts requests from the site serving it. Login, sign-up and lookup limits are stored in Postgres, so they are shared by all function instances.
+
+**Local development** uses a separate Neon branch (`dev`, a copy of the live data) via `DATABASE_URL` in `.env.local`; the live site's database is kept as `LIVE_DATABASE_URL` for migrations (`DATABASE_URL=$LIVE_DATABASE_URL npm run db:push`).

@@ -1,9 +1,9 @@
 import React, { useId, useState } from 'react';
-import { Moon, Sun } from 'lucide-react';
+import { LogOut, Moon, Sun } from 'lucide-react';
 import { SUPPORTED_CURRENCIES, useI18n, type Currency } from '../i18n';
 import type { Theme } from '../hooks/useTheme';
 import { useCurrencyNames } from '../hooks/useCurrencyNames';
-import { describeError } from '../api';
+import { apiFetch, describeError, TOKEN_KEY } from '../api';
 import { analyticsAvailable, setAnalyticsConsent, useAnalyticsConsent } from '../analytics';
 import LanguageSwitcher from './LanguageSwitcher';
 import { Button, FieldsetLabel, Modal, SegmentedControl, SelectField, TextField, toast } from './ui';
@@ -31,6 +31,20 @@ export default function PreferencesModal({ open, onClose, theme, onThemeChange, 
   const [nameError, setNameError] = useState<string | undefined>();
   const [savingName, setSavingName] = useState(false);
   const [lastOpen, setLastOpen] = useState(open);
+  const [signingOutOthers, setSigningOutOthers] = useState(false);
+
+  const signOutOthers = async () => {
+    setSigningOutOthers(true);
+    try {
+      const { token } = (await apiFetch('/users/me/sign-out-others', { method: 'POST' })) as { token: string };
+      localStorage.setItem(TOKEN_KEY, token); // keep this device signed in
+      toast.success(t('prefs.signOutOthersDone'));
+    } catch (err) {
+      toast.error(describeError(err));
+    } finally {
+      setSigningOutOthers(false);
+    }
+  };
 
   // Reset the name field from the latest value each time the dialog opens.
   if (open !== lastOpen) {
@@ -133,6 +147,16 @@ export default function PreferencesModal({ open, onClose, theme, onThemeChange, 
               { value: 'dark', label: t('prefs.dark'), icon: <Moon /> },
             ]}
           />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <FieldsetLabel>{t('prefs.security')}</FieldsetLabel>
+          <div>
+            <Button variant="secondary" onClick={signOutOthers} loading={signingOutOthers} leftIcon={<LogOut />}>
+              {t('prefs.signOutOthers')}
+            </Button>
+          </div>
+          <p className="text-xs text-fg-muted">{t('prefs.signOutOthersHint')}</p>
         </div>
 
         {analyticsAvailable && (

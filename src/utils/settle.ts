@@ -5,7 +5,8 @@
  *
  * Rules (documented in README "Settle up"):
  * - Only expenses with status "paid" create debts; "pending" bills haven't been paid by anyone yet.
- * - equal split: the amount is shared by the group's current members (same rule as the stats tiles);
+ * - equal split: the amount is shared by the expense's frozen `participants` (falling back to the
+ *   group's current members for old expenses without them);
  *   leftover cents go to the first members in a stable (uid-sorted) order.
  * - percentage / exact split: each participant owes their share from `splitDetails`;
  *   the payer is credited with what the others owe (the payer's own share cancels out).
@@ -18,6 +19,7 @@ export interface ExpenseLike {
   status?: 'paid' | 'pending' | string | null;
   splitType?: 'equal' | 'percentage' | 'exact' | string | null;
   splitDetails?: Record<string, number> | null;
+  participants?: string[] | null;
 }
 
 export interface SettlementLike {
@@ -50,7 +52,7 @@ export function expenseShares(expense: ExpenseLike, memberIds: string[]): Map<st
     return shares;
   }
 
-  const participants = [...new Set(memberIds)].sort();
+  const participants = [...new Set(expense.participants?.length ? expense.participants : memberIds)].sort();
   if (participants.length === 0) {
     shares.set(expense.paidBy, total);
     return shares;

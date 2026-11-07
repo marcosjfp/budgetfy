@@ -1,4 +1,4 @@
-import { pgTable, text, uuid, numeric, timestamp, jsonb, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, text, uuid, numeric, timestamp, jsonb, boolean, unique, integer } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
   uid: text('uid').primaryKey(),
@@ -7,6 +7,8 @@ export const users = pgTable('users', {
   passwordHash: text('password_hash'),
   /** Firebase (Google) account linked to this user, if any. */
   firebaseUid: text('firebase_uid').unique(),
+  /** Bumped by "sign out of other devices": tokens carrying an older version are rejected. */
+  tokenVersion: integer('token_version').notNull().default(0),
   photoURL: text('photo_url'),
   /** UI preferences synced across devices: { language?, currency?, theme? }. */
   preferences: jsonb('preferences').default({}),
@@ -39,7 +41,10 @@ export const groupMembers = pgTable('group_members', {
   joinedAt: timestamp('joined_at', { withTimezone: true }).defaultNow(),
   displayName: text('display_name'),
   email: text('email'),
-});
+}, (t) => [
+  // One membership per person per group (also guards against two invites racing).
+  unique('group_members_group_user_unique').on(t.groupId, t.userId),
+]);
 
 export const expenses = pgTable('expenses', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -54,6 +59,12 @@ export const expenses = pgTable('expenses', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   splitType: text('split_type').notNull().default('equal'),
   splitDetails: jsonb('split_details').default({}),
+  /**
+   * Equal splits only: the user ids sharing the expense, frozen when it was created (or switched to
+   * equal), so adding or removing group members later doesn't change past balances.
+   * NULL on legacy rows: the client falls back to the group's current members.
+   */
+  participants: jsonb('participants').$type<string[] | null>(),
   isRecurring: boolean('is_recurring').default(false),
   recurrenceId: text('recurrence_id'),
 });
@@ -72,4 +83,14 @@ export const settlements = pgTable('settlements', {
   note: text('note'),
   createdBy: text('created_by').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+/**
+ * Rate-limit counters shared by every server instance (serverless functions don't share memory).
+ * Used by server/middleware/rateLimit.ts for login, sign-up and email lookups.
+ */
+export const rateLimits = pgTable('rate_limits', {
+  key: text('key').primaryKey(),
+  hits: integer('hits').notNull(),
+  resetAt: timestamp('reset_at', { withTimezone: true }).notNull(),
 });

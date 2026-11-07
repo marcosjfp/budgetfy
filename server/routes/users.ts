@@ -3,7 +3,7 @@ import { and, eq, ne, sql } from 'drizzle-orm';
 import { db, DbInsert, DbUpdate } from '../db.js';
 import { groupMembers, users } from '../schema.js';
 import { asyncHandler, HttpError } from '../errors.js';
-import { requireAuth, AuthRequest } from '../middleware/auth.js';
+import { requireAuth, signLocalToken, AuthRequest } from '../middleware/auth.js';
 import { lookupLimiter } from '../middleware/rateLimit.js';
 import { syncUserSchema, updateProfileSchema, userSearchQuerySchema } from '../validation.js';
 
@@ -121,6 +121,22 @@ router.get(
       .where(sql`lower(${users.email}) = ${parsed.data.email}`)
       .limit(1);
     res.json(results);
+  }),
+);
+
+// POST /api/users/me/sign-out-others — invalidates every existing session token and returns a
+// fresh one for this device.
+router.post(
+  '/me/sign-out-others',
+  requireAuth,
+  asyncHandler<AuthRequest>(async (req, res) => {
+    const [user] = await db
+      .update(users)
+      .set({ tokenVersion: sql`${users.tokenVersion} + 1` } as DbUpdate<typeof users>)
+      .where(eq(users.uid, req.uid!))
+      .returning({ uid: users.uid, email: users.email, tokenVersion: users.tokenVersion });
+    if (!user) throw new HttpError(404, 'USER_NOT_FOUND', 'User not found');
+    res.json({ token: signLocalToken({ uid: user.uid, email: user.email ?? undefined, ver: user.tokenVersion }) });
   }),
 );
 

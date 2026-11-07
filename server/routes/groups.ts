@@ -208,16 +208,23 @@ router.post(
       throw new HttpError(409, 'ALREADY_MEMBER', 'User is already a member');
     }
 
-    const [created] = await db
-      .insert(groupMembers)
-      .values({
-        groupId: id,
-        userId: targetUser.uid,
-        role: 'member',
-        displayName: targetUser.displayName,
-        email: targetUser.email,
-      } as DbInsert<typeof groupMembers>)
-      .returning();
+    let created: typeof groupMembers.$inferSelect;
+    try {
+      [created] = await db
+        .insert(groupMembers)
+        .values({
+          groupId: id,
+          userId: targetUser.uid,
+          role: 'member',
+          displayName: targetUser.displayName,
+          email: targetUser.email,
+        } as DbInsert<typeof groupMembers>)
+        .returning();
+    } catch (err) {
+      // A concurrent invite added them first (unique group_id + user_id).
+      if ((err as { code?: string }).code === '23505') throw new HttpError(409, 'ALREADY_MEMBER', 'User is already a member');
+      throw err;
+    }
 
     // `ok` kept for older clients; `member` has the same shape as GET /:id/members items.
     res.status(201).json({

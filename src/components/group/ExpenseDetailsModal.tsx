@@ -86,7 +86,9 @@ export function ExpenseDetailsModal({ expense, members, canEdit, onClose, onEdit
                   share = expense.splitDetails?.[member.uid] || 0;
                   shareLabel = t('split.exactAmount');
                 } else {
-                  share = members.length ? expense.amount / members.length : 0;
+                  // Shared by the people frozen on the expense (old expenses: current members).
+                  const sharers = expense.participants?.length ? expense.participants : members.map((m) => m.uid);
+                  share = sharers.includes(member.uid) ? expense.amount / sharers.length : 0;
                   shareLabel = t('split.equalShare');
                 }
                 const payer = member.uid === expense.paidBy;
