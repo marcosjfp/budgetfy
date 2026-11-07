@@ -6,7 +6,7 @@ import { apiFetch } from '../../api';
 import { useI18n, CurrencyScope } from '../../i18n';
 import type { Theme } from '../../hooks/useTheme';
 import { handleFirestoreError, OperationType } from '../../utils/errorHandling';
-import { groupCurrency, normalizeExpense, normalizeSettlement } from '../../utils/budget';
+import { canModifyExpense, groupCurrency, normalizeExpense, normalizeSettlement } from '../../utils/budget';
 import { deleteWithUndo } from '../../utils/undo';
 import { Button, Card, ConfirmDialog, EmptyState, LoadingRegion, Skeleton, toast } from '../ui';
 import { PageSkeleton } from '../PageSkeleton';
@@ -38,7 +38,6 @@ interface GroupViewProps {
   onDeleted: () => void;
 }
 
-const MAX_OCCURRENCES = 50;
 
 export default function GroupView({ groupId, user, theme, onBack, onChanged, onDeleted }: GroupViewProps) {
   const { t, formatDate, formatDateRange, currency: preferredCurrency } = useI18n();
@@ -149,25 +148,12 @@ export default function GroupView({ groupId, user, theme, onBack, onChanged, onD
           await apiFetch(`/groups/${groupId}/expenses/${editing.id}`, { method: 'PATCH', body: JSON.stringify(data) });
         }
       } else if (recurrence) {
-        const start = new Date(data.date);
-        const recurrenceId = crypto.randomUUID();
-        const dueOffset = data.dueDate ? new Date(data.dueDate).getTime() - start.getTime() : null;
-        const bulk = [];
-        const current = new Date(start);
-        while (current <= recurrence.endDate && bulk.length < MAX_OCCURRENCES) {
-          bulk.push({
-            ...data,
-            date: current.toISOString(),
-            dueDate: dueOffset !== null ? new Date(current.getTime() + dueOffset).toISOString() : data.dueDate,
-            isRecurring: true,
-            recurrenceId,
-          });
-          if (recurrence.frequency === 'daily') current.setDate(current.getDate() + 1);
-          else if (recurrence.frequency === 'weekly') current.setDate(current.getDate() + 7);
-          else if (recurrence.frequency === 'monthly') current.setMonth(current.getMonth() + 1);
-          else current.setFullYear(current.getFullYear() + 1);
-        }
-        await apiFetch(`/groups/${groupId}/expenses`, { method: 'POST', body: JSON.stringify(bulk) });
+        // The server creates every occurrence (up to a year of daily expenses) in one go.
+        const created = (await apiFetch(`/groups/${groupId}/expenses/series`, {
+          method: 'POST',
+          body: JSON.stringify({ expense: data, recurrence }),
+        })) as { count: number; truncated: boolean };
+        if (created.truncated) toast.info(t('toast.seriesTruncated', { count: created.count }));
       } else {
         await apiFetch(`/groups/${groupId}/expenses`, { method: 'POST', body: JSON.stringify(data) });
       }
@@ -422,7 +408,7 @@ export default function GroupView({ groupId, user, theme, onBack, onChanged, onD
       <ExpenseDetailsModal
         expense={viewing}
         members={members}
-        canEdit={!!viewing && (viewing.paidBy === user.uid || userIsAdmin)}
+        canEdit={!!viewing && canModifyExpense(viewing, user.uid, userIsAdmin)}
         onClose={() => setViewing(null)}
         onEdit={(e) => {
           setViewing(null);

@@ -1,4 +1,5 @@
 import { Router, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db, DbInsert, DbUpdate } from '../db.js';
 import { expenses, groupMembers } from '../schema.js';
@@ -12,19 +13,66 @@ import {
   expenseParamsSchema,
   groupParamsSchema,
   updateExpenseSchema,
+  createSeriesSchema,
 } from '../validation.js';
 
 const router = Router({ mergeParams: true }); // Access :id from parent route
 
+type MemberRequest = AuthRequest & { membershipRole?: string };
+
 /** Every route below requires an authenticated group member. */
 router.use(
   requireAuth,
-  asyncHandler<AuthRequest>(async (req, _res: Response, next: NextFunction) => {
+  asyncHandler<MemberRequest>(async (req, _res: Response, next: NextFunction) => {
     const { id } = groupParamsSchema.parse(req.params);
-    await requireMembership(id, req.uid!);
+    const member = await requireMembership(id, req.uid!);
+    req.membershipRole = member.role;
     next();
   }),
 );
+
+/** Who may edit or delete an expense: whoever added it, whoever paid it, or a group admin. */
+function canModify(req: MemberRequest, row: { paidBy: string; createdBy: string | null }) {
+  return req.membershipRole === 'admin' || row.paidBy === req.uid || row.createdBy === req.uid;
+}
+
+/** Throws 404 if no rows matched, 403 if the caller may not change every one of them. */
+function assertCanModify(req: MemberRequest, rows: { paidBy: string; createdBy: string | null }[]) {
+  if (rows.length === 0) throw new HttpError(404, 'EXPENSE_NOT_FOUND', 'Expense not found');
+  if (!rows.every((r) => canModify(req, r))) {
+    throw new HttpError(403, 'EXPENSE_FORBIDDEN', 'Only the person who added or paid this expense, or a group admin, can change it');
+  }
+}
+
+/** Most occurrences one recurring series may create (a year of daily expenses). */
+const MAX_OCCURRENCES = 366;
+
+/**
+ * Occurrence dates from `start` to `end` (inclusive), in UTC so the server's timezone doesn't matter.
+ * Monthly/yearly keep the start day, clamped to the month's last day (Jan 31 -> Feb 28 -> Mar 31).
+ */
+function seriesDates(start: Date, end: Date, frequency: 'daily' | 'weekly' | 'monthly' | 'yearly', limit: number): Date[] {
+  const y = start.getUTCFullYear();
+  const m = start.getUTCMonth();
+  const d = start.getUTCDate();
+  const time = start.getTime() - Date.UTC(y, m, d);
+  const dates: Date[] = [];
+  for (let n = 0; n < limit; n++) {
+    let day: number;
+    if (frequency === 'daily') day = Date.UTC(y, m, d + n);
+    else if (frequency === 'weekly') day = Date.UTC(y, m, d + 7 * n);
+    else {
+      const year = frequency === 'yearly' ? y + n : y;
+      const month = frequency === 'monthly' ? m + n : m;
+      const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+      day = Date.UTC(year, month, Math.min(d, lastDay));
+    }
+    const at = new Date(day + time);
+    if (at.getTime() > end.getTime()) break;
+    dates.push(at);
+  }
+  return dates;
+}
 
 function groupIdOf(req: AuthRequest): string {
   return (req.params as Record<string, string>).id;
@@ -95,6 +143,7 @@ router.post(
       splitType: exp.splitType || 'equal',
       splitDetails: exp.splitDetails || {},
       participants: (exp.splitType || 'equal') === 'equal' ? memberIds : null,
+      createdBy: uid,
       isRecurring: exp.isRecurring || false,
       recurrenceId: exp.recurrenceId || null,
     }));
@@ -109,10 +158,60 @@ router.post(
   }),
 );
 
+// POST /api/groups/:id/expenses/series — { expense, recurrence: { frequency, endDate } }
+// Creates every occurrence in one statement (all or nothing).
+router.post(
+  '/series',
+  asyncHandler<MemberRequest>(async (req, res) => {
+    const uid = req.uid!;
+    const groupId = groupIdOf(req);
+    const { expense: exp, recurrence } = createSeriesSchema.parse(req.body);
+
+    const paidBy = exp.paidBy || uid;
+    const [payer] = await db
+      .select({ userId: groupMembers.userId })
+      .from(groupMembers)
+      .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, paidBy)))
+      .limit(1);
+    if (!payer) throw new HttpError(400, 'PAYER_NOT_MEMBER', 'The payer must be a member of this group');
+
+    const memberIds = await currentMemberIds(groupId);
+    const recurrenceId = crypto.randomUUID();
+    const dueOffset = exp.dueDate ? exp.dueDate.getTime() - exp.date.getTime() : null;
+    // One extra date tells us whether the series was cut at the limit.
+    const all = seriesDates(exp.date, recurrence.endDate, recurrence.frequency, MAX_OCCURRENCES + 1);
+    const dates = all.slice(0, MAX_OCCURRENCES);
+
+    const values = dates.map((date) => ({
+      groupId,
+      amount: String(exp.amount),
+      description: exp.description,
+      category: exp.category || 'Other',
+      paidBy,
+      date,
+      dueDate: dueOffset !== null ? new Date(date.getTime() + dueOffset) : null,
+      status: exp.status || 'paid',
+      splitType: exp.splitType || 'equal',
+      splitDetails: exp.splitDetails || {},
+      participants: (exp.splitType || 'equal') === 'equal' ? memberIds : null,
+      createdBy: uid,
+      isRecurring: true,
+      recurrenceId,
+    }));
+    const inserted = await db.insert(expenses).values(values as DbInsert<typeof expenses>[]).returning();
+    res.status(201).json({
+      recurrenceId,
+      count: inserted.length,
+      truncated: all.length > MAX_OCCURRENCES,
+      expenses: inserted.map(serializeExpense),
+    });
+  }),
+);
+
 // PATCH /api/groups/:id/expenses/bulk (Update series)
 router.patch(
   '/bulk',
-  asyncHandler<AuthRequest>(async (req, res) => {
+  asyncHandler<MemberRequest>(async (req, res) => {
     const groupId = groupIdOf(req);
     const { recurrenceId, fromDate, updates } = bulkUpdateSchema.parse(req.body);
 
@@ -127,6 +226,7 @@ router.patch(
 
     const conditions = [eq(expenses.groupId, groupId), eq(expenses.recurrenceId, recurrenceId)];
     if (fromDate) conditions.push(gte(expenses.date, fromDate));
+    assertCanModify(req, await db.select({ paidBy: expenses.paidBy, createdBy: expenses.createdBy }).from(expenses).where(and(...conditions)));
 
     await db.update(expenses).set(set as DbUpdate<typeof expenses>).where(and(...conditions));
     res.json({ ok: true });
@@ -136,12 +236,13 @@ router.patch(
 // DELETE /api/groups/:id/expenses/bulk (Delete series)
 router.delete(
   '/bulk',
-  asyncHandler<AuthRequest>(async (req, res) => {
+  asyncHandler<MemberRequest>(async (req, res) => {
     const groupId = groupIdOf(req);
     const { recurrenceId, fromDate } = bulkDeleteSchema.parse(req.body ?? {}); // Sent in body since DELETE
 
     const conditions = [eq(expenses.groupId, groupId), eq(expenses.recurrenceId, recurrenceId)];
     if (fromDate) conditions.push(gte(expenses.date, fromDate));
+    assertCanModify(req, await db.select({ paidBy: expenses.paidBy, createdBy: expenses.createdBy }).from(expenses).where(and(...conditions)));
 
     await db.delete(expenses).where(and(...conditions));
     res.json({ ok: true });
@@ -151,7 +252,7 @@ router.delete(
 // PATCH /api/groups/:id/expenses/:expId
 router.patch(
   '/:expId',
-  asyncHandler<AuthRequest>(async (req, res) => {
+  asyncHandler<MemberRequest>(async (req, res) => {
     const { id: groupId, expId } = expenseParamsSchema.parse(req.params);
     const updates = updateExpenseSchema.parse(req.body);
 
@@ -167,6 +268,7 @@ router.patch(
     if (updates.splitType === 'equal') set.participants = freezeParticipants(await currentMemberIds(groupId));
 
     const where = and(eq(expenses.id, expId), eq(expenses.groupId, groupId));
+    assertCanModify(req, await db.select({ paidBy: expenses.paidBy, createdBy: expenses.createdBy }).from(expenses).where(where).limit(1));
     const [updated] =
       Object.keys(set).length > 0
         ? await db.update(expenses).set(set as DbUpdate<typeof expenses>).where(where).returning()
@@ -180,8 +282,10 @@ router.patch(
 // DELETE /api/groups/:id/expenses/:expId
 router.delete(
   '/:expId',
-  asyncHandler<AuthRequest>(async (req, res) => {
+  asyncHandler<MemberRequest>(async (req, res) => {
     const { id: groupId, expId } = expenseParamsSchema.parse(req.params);
+    const where = and(eq(expenses.id, expId), eq(expenses.groupId, groupId));
+    assertCanModify(req, await db.select({ paidBy: expenses.paidBy, createdBy: expenses.createdBy }).from(expenses).where(where).limit(1));
 
     const deleted = await db
       .delete(expenses)

@@ -66,6 +66,8 @@ export const expenses = pgTable('expenses', {
    */
   participants: jsonb('participants').$type<string[] | null>(),
   isRecurring: boolean('is_recurring').default(false),
+  /** Who added the expense. NULL on rows created before this was tracked (then: payer or admins). */
+  createdBy: text('created_by'),
   recurrenceId: text('recurrence_id'),
 });
 

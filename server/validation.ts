@@ -16,11 +16,18 @@ export const amountSchema = z.preprocess(
 const MIN_DATE = Date.UTC(1900, 0, 1);
 const MAX_DATE = Date.UTC(2200, 0, 1);
 
-/** ISO-8601 string or epoch millis -> Date, bounded to a sane range. */
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * ISO-8601 string, "YYYY-MM-DD" or epoch millis -> Date, bounded to a sane range.
+ * Calendar dates ("YYYY-MM-DD") are stored at 12:00 UTC, which falls on the same day in every
+ * timezone from UTC-11 to UTC+11 (midnight UTC shows as the previous day in Brazil).
+ */
 export const dateSchema = z
   .union([z.string().trim().min(1).max(64), z.number().finite()])
   .transform((v, ctx) => {
-    const d = new Date(v);
+    const m = typeof v === 'string' ? DATE_ONLY.exec(v) : null;
+    const d = m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12)) : new Date(v);
     const t = d.getTime();
     if (Number.isNaN(t) || t < MIN_DATE || t > MAX_DATE) {
       ctx.addIssue({ code: 'custom', message: 'Invalid date' });
@@ -174,6 +181,19 @@ export const createExpensesBodySchema = z.union([
   createExpenseSchema,
   z.array(createExpenseSchema).min(1).max(100),
 ]);
+
+export const recurrenceFrequencySchema = z.enum(['daily', 'weekly', 'monthly', 'yearly']);
+
+/** POST /expenses/series: one expense + a repeat rule; the server creates every occurrence. */
+export const createSeriesSchema = z
+  .object({
+    expense: createExpenseSchema.omit({ isRecurring: true, recurrenceId: true }),
+    recurrence: z.object({ frequency: recurrenceFrequencySchema, endDate: dateSchema }),
+  })
+  .refine((b) => b.recurrence.endDate.getTime() >= b.expense.date.getTime(), {
+    message: 'The end date must be on or after the start date',
+    path: ['recurrence', 'endDate'],
+  });
 
 export const updateExpenseSchema = z.object({
   amount: amountSchema.optional(),

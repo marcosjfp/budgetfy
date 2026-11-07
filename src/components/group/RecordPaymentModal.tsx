@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { HandCoins } from 'lucide-react';
 import type { GroupMember } from '../../types';
 import { useI18n } from '../../i18n';
-import { fromDateInputValue, toDateInputValue } from '../../utils/budget';
+import { toDateInputValue } from '../../utils/budget';
 import { Button, Modal, SelectField, TextField } from '../ui';
 
 export interface PaymentDraft {
@@ -56,7 +56,7 @@ export function RecordPaymentModal({ open, draft, members, currentUserId, isAdmi
     if (Object.keys(next).length) return;
     setSaving(true);
     try {
-      await onSubmit({ fromUser, toUser, amount: Math.round(value * 100) / 100, date: fromDateInputValue(date).toISOString(), note: note.trim() || null });
+      await onSubmit({ fromUser, toUser, amount: Math.round(value * 100) / 100, date /* calendar date (YYYY-MM-DD) */, note: note.trim() || null });
     } catch {
       // reported by caller; keep the form open
     } finally {

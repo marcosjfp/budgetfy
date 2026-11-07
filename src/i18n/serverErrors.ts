@@ -23,6 +23,7 @@ export type ApiErrorCode =
   | 'USER_NOT_FOUND'
   | 'ALREADY_MEMBER'
   | 'PAYER_NOT_MEMBER'
+  | 'EXPENSE_FORBIDDEN'
   | 'SETTLEMENT_NOT_FOUND'
   | 'INVALID_SETTLEMENT'
   | 'RATE_LIMITED'
@@ -63,6 +64,7 @@ const CODE_KEYS: Record<ApiErrorCode, TranslationKey> = {
   USER_NOT_FOUND: 'serverError.code.USER_NOT_FOUND',
   ALREADY_MEMBER: 'serverError.code.ALREADY_MEMBER',
   PAYER_NOT_MEMBER: 'serverError.code.PAYER_NOT_MEMBER',
+  EXPENSE_FORBIDDEN: 'serverError.code.EXPENSE_FORBIDDEN',
   SETTLEMENT_NOT_FOUND: 'serverError.code.SETTLEMENT_NOT_FOUND',
   INVALID_SETTLEMENT: 'serverError.code.INVALID_SETTLEMENT',
   RATE_LIMITED: 'serverError.code.RATE_LIMITED',

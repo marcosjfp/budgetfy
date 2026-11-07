@@ -2,7 +2,7 @@ import React, { useId, useState } from 'react';
 import { Repeat } from 'lucide-react';
 import { CATEGORIES, type Expense, type GroupMember, type SplitType } from '../../types';
 import { useI18n, CATEGORY_KEYS, SPLIT_KEYS } from '../../i18n';
-import { fromDateInputValue, toDateInputValue } from '../../utils/budget';
+import { toDateInputValue } from '../../utils/budget';
 import { categoryStyle } from '../CategoryIcon';
 import { Avatar, Button, ConfirmDialog, FieldsetLabel, Modal, SegmentedControl, SelectField, TextField, cn } from '../ui';
 import { ScopeChoice } from './ScopeChoice';
@@ -25,7 +25,8 @@ export interface ExpensePayload {
 export interface ExpenseSubmit {
   data: ExpensePayload;
   /** Only for new expenses. */
-  recurrence: { frequency: RecurrenceFrequency; endDate: Date } | null;
+  /** endDate is a calendar date (YYYY-MM-DD); the server creates the occurrences. */
+  recurrence: { frequency: RecurrenceFrequency; endDate: string } | null;
   /** Only when editing a recurring expense. */
   scope: Scope;
 }
@@ -105,10 +106,12 @@ export function ExpenseFormModal({ open, onClose, expense, initialScope = 'this'
           status,
           splitType,
           splitDetails: splitType === 'equal' ? {} : splitDetails,
-          dueDate: dueDate ? fromDateInputValue(dueDate).toISOString() : null,
-          date: fromDateInputValue(date).toISOString(),
+          // Calendar dates (YYYY-MM-DD): the server stores them at midday UTC so they show on
+          // the same day in every timezone.
+          dueDate: dueDate || null,
+          date,
         },
-        recurrence: !expense && isRecurring && endDate ? { frequency, endDate: fromDateInputValue(endDate) } : null,
+        recurrence: !expense && isRecurring && endDate ? { frequency, endDate } : null,
         scope: chosenScope,
       });
       setScopeOpen(false);

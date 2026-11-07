@@ -10,7 +10,6 @@ import { handleFirestoreError, OperationType } from '../utils/errorHandling';
 import { apiFetch } from '../api';
 import {
   effectiveDueDate,
-  fromDateInputValue,
   groupCurrency,
   isDateInCurrentPeriod,
   isOverdue,
@@ -569,7 +568,7 @@ function EditExpenseModal({ expense, onClose, onSaved }: { expense: GroupExpense
           amount: parseFloat(amount),
           description: description.trim(),
           category,
-          date: fromDateInputValue(date).toISOString(),
+          date, // calendar date (YYYY-MM-DD)
         }),
       });
       onSaved();

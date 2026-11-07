@@ -460,7 +460,8 @@ export const pt: Dictionary = {
 
   'expense.dueDate': 'Vencimento',
   'expense.memberShareLabel': 'Parte de {{name}}',
-  'expense.recurringLimitHint': 'São criadas até 50 ocorrências.',
+  'toast.seriesTruncated': 'Só as primeiras {{count}} ocorrências foram criadas (limite atingido).',
+  'expense.recurringLimitHint': 'São criadas até 366 ocorrências (um ano de despesas diárias).',
 
   'sort.menuLabel': 'Ordenar transações',
   'sort.ascending': 'crescente',
@@ -495,6 +496,7 @@ export const pt: Dictionary = {
   'serverError.code.USER_NOT_FOUND': 'Nenhum usuário encontrado com esse e-mail. A pessoa precisa entrar no app primeiro.',
   'serverError.code.ALREADY_MEMBER': 'Esta pessoa já faz parte do grupo.',
   'serverError.code.PAYER_NOT_MEMBER': 'Quem pagou precisa ser membro do grupo.',
+  'serverError.code.EXPENSE_FORBIDDEN': 'Só quem adicionou ou pagou esta despesa, ou um administrador do grupo, pode alterá-la.',
   'serverError.code.RATE_LIMITED': 'Muitas tentativas. Aguarde um pouco e tente novamente.',
   'serverError.code.CORS_REJECTED': 'Este app não tem permissão para acessar o servidor.',
   'serverError.code.INTERNAL_ERROR': 'Algo deu errado do nosso lado. Tente novamente.',

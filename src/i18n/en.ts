@@ -465,7 +465,8 @@ export const en = {
 
   'expense.dueDate': 'Due date',
   'expense.memberShareLabel': "{{name}}'s share",
-  'expense.recurringLimitHint': 'Up to 50 occurrences are created.',
+  'toast.seriesTruncated': 'Only the first {{count}} occurrences were created (limit reached).',
+  'expense.recurringLimitHint': 'Up to 366 occurrences are created (a year of daily expenses).',
 
   'sort.menuLabel': 'Sort transactions',
   'sort.ascending': 'ascending',
@@ -500,6 +501,7 @@ export const en = {
   'serverError.code.USER_NOT_FOUND': 'No user found with that email. They must sign in first.',
   'serverError.code.ALREADY_MEMBER': 'This user is already a member.',
   'serverError.code.PAYER_NOT_MEMBER': 'The person who paid must be a member of the group.',
+  'serverError.code.EXPENSE_FORBIDDEN': 'Only the person who added or paid this expense, or a group admin, can change it.',
   'serverError.code.RATE_LIMITED': 'Too many attempts. Please wait a moment and try again.',
   'serverError.code.CORS_REJECTED': 'This app is not allowed to reach the server.',
   'serverError.code.INTERNAL_ERROR': 'Something went wrong on our side. Please try again.',

@@ -2,7 +2,7 @@ import { useId, useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpDown, Check, Clock, Download, Pencil, Plus, Receipt, Repeat, Search, SearchX, Settings2, SlidersHorizontal, Trash2, AlertCircle, X } from 'lucide-react';
 import { CATEGORIES, type Expense, type GroupMember } from '../../types';
 import { useI18n, CATEGORY_KEYS, SORT_KEYS, SPLIT_KEYS, STATUS_KEYS } from '../../i18n';
-import { fromDateInputValue, isOverdue, toDateInputValue } from '../../utils/budget';
+import { canModifyExpense, fromDateInputValue, isOverdue, toDateInputValue } from '../../utils/budget';
 import { downloadTextFile, slugify, toCsv } from '../../utils/csv';
 import { CategoryIcon } from '../CategoryIcon';
 import { Badge, Button, Card, EmptyState, IconButton, Popover, SegmentedControl, SelectField, TextField, cn, toast } from '../ui';
@@ -336,7 +336,7 @@ export function ExpenseList({ groupName, expenses, members, currentUserId, isAdm
         ) : (
           <ul className="divide-y divide-line">
             {sorted.map((expense) => {
-              const canEdit = currentUserId === expense.paidBy || isAdmin;
+              const canEdit = canModifyExpense(expense, currentUserId, isAdmin);
               return (
                 <li key={expense.id} className="group relative flex items-center gap-3 sm:gap-4 p-3 sm:p-4 hover:bg-surface-2/60 transition-colors">
                   <CategoryIcon category={expense.category}>

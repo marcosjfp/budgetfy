@@ -108,6 +108,11 @@ ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "token_version" integer NOT NULL DE
 ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "participants" jsonb;
 ALTER TABLE "group_members" ADD CONSTRAINT "group_members_group_user_unique" UNIQUE ("group_id", "user_id");
 CREATE TABLE IF NOT EXISTS "rate_limits" ("key" text PRIMARY KEY, "hits" integer NOT NULL, "reset_at" timestamptz NOT NULL);
+ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "created_by" text;
+-- One-off: dates saved at midnight UTC by older versions showed a day early west of UTC; move them to midday.
+UPDATE "expenses" SET "date" = "date" + interval '12 hours' WHERE ("date" AT TIME ZONE 'UTC')::time = '00:00:00';
+UPDATE "expenses" SET "due_date" = "due_date" + interval '12 hours' WHERE "due_date" IS NOT NULL AND ("due_date" AT TIME ZONE 'UTC')::time = '00:00:00';
+UPDATE "settlements" SET "date" = "date" + interval '12 hours' WHERE ("date" AT TIME ZONE 'UTC')::time = '00:00:00';
 CREATE TABLE IF NOT EXISTS "settlements" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
   "group_id" uuid NOT NULL,
@@ -166,6 +171,9 @@ New error codes: `SETTLEMENT_NOT_FOUND`, `INVALID_SETTLEMENT`. Group settings (`
 - **HTTP hardening**: `helmet` security headers, CORS restricted to `CORS_ORIGINS`, 100 kB JSON body limit, rate limiting (`express-rate-limit`) globally and stricter on login/register/email lookups. The strict limits keep their counters in Postgres (`rate_limits` table) so they hold across serverless instances. Set `TRUST_PROXY` behind a load balancer so limits apply per client IP.
 - **Sessions**: login tokens carry `users.token_version`; **Preferences → Sign out of other devices** bumps it, which invalidates every other session.
 - **Equal splits**: each equal-split expense stores its `participants` when created, so adding or removing members later doesn't change past balances.
+- **Expense permissions**: only the person who added an expense (`created_by`), the person who paid it, or a group admin can edit or delete it (also for whole recurring series). Enforced on the server.
+- **Recurring expenses**: `POST /api/groups/:id/expenses/series` with `{ expense, recurrence: { frequency, endDate } }` creates every occurrence on the server in one statement (up to 366; monthly/yearly keep the day, clamped to month end).
+- **Dates**: calendar dates are sent as `YYYY-MM-DD` and stored at 12:00 UTC, so they show on the same day in every timezone from UTC-11 to UTC+11.
 - **Errors**: a central handler returns `{ "error": string, "code": string }` (e.g. `VALIDATION_ERROR`, `INVALID_CREDENTIALS`, `NOT_A_MEMBER`, `RATE_LIMITED`) and never leaks stack traces or database errors.
 - **`drop.ts`** wipes the database schema. It refuses to run with `NODE_ENV=production`, requires `--yes`, and only targets localhost unless `ALLOW_REMOTE_DROP=true`.
 - **Firestore**: the app does not use Firestore; `firestore.rules` is locked down (members-only reads, no self-joining arbitrary groups).

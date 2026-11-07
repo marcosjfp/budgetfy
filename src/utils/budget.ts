@@ -46,6 +46,11 @@ export function normalizeSettlement(s: any): Settlement {
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+/** Mirrors the server rule: whoever added or paid an expense, or a group admin, may change it. */
+export function canModifyExpense(e: Pick<Expense, 'paidBy' | 'createdBy'>, uid: string, isAdmin: boolean): boolean {
+  return isAdmin || e.paidBy === uid || e.createdBy === uid;
+}
+
 /** Due date if set, otherwise the expense date. */
 export function effectiveDueDate(e: Expense): Date {
   return e.dueDate?.toDate() ?? e.date.toDate();
