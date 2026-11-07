@@ -20,15 +20,22 @@ app.disable('x-powered-by');
 
 app.use(helmet());
 app.use(
-  cors({
-    origin(origin, callback) {
-      // Same-origin / non-browser requests carry no Origin header.
-      if (!origin || config.corsOrigins.includes(origin)) return callback(null, true);
-      callback(new HttpError(403, 'CORS_REJECTED', 'Origin not allowed'));
-    },
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    maxAge: 600,
+  cors((req, callback) => {
+    const origin = req.headers.origin;
+    const base = {
+      methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+      maxAge: 600,
+    };
+    // Same-origin / non-browser requests carry no Origin header.
+    if (!origin || config.corsOrigins.includes(origin)) return callback(null, { ...base, origin: true });
+    // Browsers also send Origin on same-origin POSTs: allow requests from the site serving this API.
+    try {
+      if (new URL(origin).host === req.headers.host) return callback(null, { ...base, origin: true });
+    } catch {
+      // Malformed Origin header: fall through to rejection.
+    }
+    callback(new HttpError(403, 'CORS_REJECTED', 'Origin not allowed'));
   }),
 );
 app.use(express.json({ limit: '100kb' }));
@@ -47,6 +54,11 @@ app.use('/api/groups/:id/settlements', settlementsRoutes);
 app.use('/api', notFoundHandler);
 app.use(errorHandler);
 
-app.listen(config.port, () => {
-  console.log(`API Server running on port ${config.port} (${config.nodeEnv})`);
-});
+// On Vercel the app is exported as a serverless function (see api/index.ts); locally it listens on a port.
+if (!process.env.VERCEL) {
+  app.listen(config.port, () => {
+    console.log(`API Server running on port ${config.port} (${config.nodeEnv})`);
+  });
+}
+
+export default app;

@@ -175,3 +175,17 @@ New error codes: `SETTLEMENT_NOT_FOUND`, `INVALID_SETTLEMENT`. Group settings (`
 ---
 
 Built by Marcos Fernandes for better financial management.
+
+## ▲ Deploy to Vercel (free Hobby plan)
+
+The repo is ready for Vercel: `vercel.json` builds the Vite frontend into `dist/` and serves the Express API as one serverless function (`api/index.ts`, which imports `server/index.ts`). Functions run in Frankfurt (`fra1`), next to the Neon database.
+
+1. Import the GitHub repo in Vercel (framework: Vite; settings come from `vercel.json`).
+2. Add environment variables for Production and Preview:
+   - `DATABASE_URL`: Neon pooled connection string (`...-pooler...?sslmode=verify-full`)
+   - `JWT_SECRET`: at least 32 random characters (`openssl rand -base64 48`)
+   - `FIREBASE_PROJECT_ID`
+   - `TRUST_PROXY=1`
+3. Run `npm run db:push` once against the database, then push to `main` to deploy.
+
+`CORS_ORIGINS` is optional: the API always accepts requests from the site serving it. Rate limits are kept in memory per function instance, so on serverless they are weaker; use a shared store (for example Upstash Redis) before real users.
