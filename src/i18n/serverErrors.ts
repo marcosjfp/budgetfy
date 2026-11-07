@@ -9,6 +9,7 @@ export type ApiErrorCode =
   | 'INVALID_TOKEN'
   | 'INVALID_CREDENTIALS'
   | 'EMAIL_IN_USE'
+  | 'ACCOUNT_LINK_CONFLICT'
   | 'WEAK_PASSWORD'
   | 'FORBIDDEN'
   | 'NOT_A_MEMBER'
@@ -48,6 +49,7 @@ const CODE_KEYS: Record<ApiErrorCode, TranslationKey> = {
   INVALID_TOKEN: 'serverError.code.INVALID_TOKEN',
   INVALID_CREDENTIALS: 'serverError.code.INVALID_CREDENTIALS',
   EMAIL_IN_USE: 'serverError.code.EMAIL_IN_USE',
+  ACCOUNT_LINK_CONFLICT: 'serverError.code.ACCOUNT_LINK_CONFLICT',
   WEAK_PASSWORD: 'serverError.code.WEAK_PASSWORD',
   FORBIDDEN: 'serverError.code.FORBIDDEN',
   NOT_A_MEMBER: 'serverError.code.NOT_A_MEMBER',

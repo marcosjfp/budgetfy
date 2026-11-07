@@ -94,6 +94,7 @@ npm run db:push
 | :-- | :-- | :-- |
 | Per-group currency | `groups.currency text` (nullable) | `NULL` = shown in each viewer's preferred currency (previous behaviour) |
 | Synced preferences | `users.preferences jsonb` | `{}` |
+| Linked Google account | `users.firebase_uid text unique` | `NULL` |
 | Settle-up payments | new table `settlements (id, group_id, from_user, to_user, amount, date, note, created_by, created_at)` | — |
 
 If you prefer to apply them by hand:
@@ -101,6 +102,8 @@ If you prefer to apply them by hand:
 ```sql
 ALTER TABLE "groups" ADD COLUMN IF NOT EXISTS "currency" text;
 ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "preferences" jsonb DEFAULT '{}'::jsonb;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "firebase_uid" text;
+ALTER TABLE "users" ADD CONSTRAINT "users_firebase_uid_unique" UNIQUE ("firebase_uid");
 CREATE TABLE IF NOT EXISTS "settlements" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
   "group_id" uuid NOT NULL,

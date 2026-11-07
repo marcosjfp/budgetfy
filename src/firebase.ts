@@ -36,4 +36,28 @@ export const signIn = () => {
   return signInWithPopup(auth, googleProvider);
 };
 export const logOut = () => (auth ? signOut(auth) : Promise.resolve());
+
+/** Session returned by /api/auth/login, /register and /firebase. */
+export interface AppSession {
+  token: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  user: any;
+}
+
+/**
+ * Trades the signed-in Firebase (Google) user for a normal Budgetfy session. The server opens the
+ * existing account with the same verified email, so Google and email/password reach the same data.
+ * The Firebase session is then closed: the app only uses its own token from here on.
+ */
+export async function exchangeFirebaseSession(
+  firebaseUser: { getIdToken: () => Promise<string> },
+  post: (endpoint: string, body: unknown) => Promise<AppSession>,
+): Promise<AppSession> {
+  const idToken = await firebaseUser.getIdToken();
+  try {
+    return await post('/auth/firebase', { idToken });
+  } finally {
+    await logOut().catch(() => undefined);
+  }
+}
 export { signInWithEmailAndPassword, createUserWithEmailAndPassword };

@@ -1,4 +1,3 @@
-import { auth } from './firebase';
 import { getLang, translate } from './i18n/core';
 import { translateApiError } from './i18n/serverErrors';
 
@@ -58,14 +57,8 @@ async function parseBody(response: Response) {
 }
 
 export async function apiFetch(endpoint: string, options: RequestInit = {}) {
-  let token: string | null = null;
-
-  // Try Firebase token first, then the local (email/password) token.
-  if (auth?.currentUser) {
-    token = await auth.currentUser.getIdToken();
-  } else {
-    token = localStorage.getItem(TOKEN_KEY);
-  }
+  // Google sign-in is exchanged for a Budgetfy token too, so every session uses the same token.
+  const token = localStorage.getItem(TOKEN_KEY);
 
   const response = await send(endpoint, options, token);
 

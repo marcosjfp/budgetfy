@@ -5,6 +5,8 @@ export const users = pgTable('users', {
   displayName: text('display_name'),
   email: text('email').unique(),
   passwordHash: text('password_hash'),
+  /** Firebase (Google) account linked to this user, if any. */
+  firebaseUid: text('firebase_uid').unique(),
   photoURL: text('photo_url'),
   /** UI preferences synced across devices: { language?, currency?, theme? }. */
   preferences: jsonb('preferences').default({}),

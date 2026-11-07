@@ -78,6 +78,10 @@ export const registerSchema = z.object({
   displayName: displayNameSchema,
 });
 
+export const firebaseLoginSchema = z.object({
+  idToken: z.string().min(1).max(4096),
+});
+
 export const loginSchema = z.object({
   email: emailSchema,
   // Don't apply the policy on login (legacy accounts); just bound the size.

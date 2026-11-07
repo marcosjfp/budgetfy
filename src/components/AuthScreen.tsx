@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { Wallet, Eye, EyeOff, SplitSquareHorizontal, PiggyBank, BellRing, Info, Sun, Moon, AlertCircle } from 'lucide-react';
-import { firebaseEnabled, signIn } from '../firebase';
+import { exchangeFirebaseSession, firebaseEnabled, signIn, type AppSession } from '../firebase';
 import { ApiError, authFetch, describeError, TOKEN_KEY, USER_KEY } from '../api';
 import { useI18n, type TranslationKey } from '../i18n';
 import type { Theme } from '../hooks/useTheme';
@@ -121,8 +121,16 @@ export default function AuthScreen({ onAuthenticated, sessionExpired, theme, onT
     setFormError(null);
     setGoogleLoading(true);
     try {
-      await signIn();
+      const credential = await signIn();
+      const data = await exchangeFirebaseSession(credential.user, (endpoint, body) => authFetch<AppSession>(endpoint, body));
+      localStorage.setItem(TOKEN_KEY, data.token);
+      localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+      onAuthenticated(data.user);
     } catch (error: any) {
+      if (error instanceof ApiError) {
+        setFormError(describeError(error));
+        return;
+      }
       const code = error?.code as string | undefined;
       if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
         console.error('Google sign-in error:', error);

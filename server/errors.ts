@@ -13,6 +13,7 @@ export type ErrorCode =
   | 'INVALID_TOKEN'
   | 'INVALID_CREDENTIALS'
   | 'EMAIL_IN_USE'
+  | 'ACCOUNT_LINK_CONFLICT'
   | 'WEAK_PASSWORD'
   | 'FORBIDDEN'
   | 'NOT_A_MEMBER'

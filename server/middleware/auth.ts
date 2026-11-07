@@ -44,6 +44,16 @@ function verifyLocalToken(token: string): LocalTokenPayload {
   return { uid: decoded.uid, email: typeof decoded.email === 'string' ? decoded.email : undefined };
 }
 
+/** Verifies a Firebase ID token (Google sign-in). Throws if Firebase isn't configured or the token is invalid. */
+export async function verifyFirebaseIdToken(idToken: string) {
+  if (!config.firebaseProjectId) throw new HttpError(401, 'INVALID_TOKEN', 'Google sign-in is not configured');
+  try {
+    return await admin.auth().verifyIdToken(idToken);
+  } catch {
+    throw new HttpError(401, 'INVALID_TOKEN', 'Invalid or expired token');
+  }
+}
+
 export async function requireAuth(req: AuthRequest, _res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {

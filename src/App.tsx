@@ -4,11 +4,11 @@
  */
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { onAuthStateChanged, type User } from 'firebase/auth';
+import type { User } from 'firebase/auth';
 import { Menu, Wallet } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, logOut } from './firebase';
-import { apiFetch, clearLocalSession, SESSION_EXPIRED_EVENT, TOKEN_KEY, USER_KEY } from './api';
+import { auth, exchangeFirebaseSession, logOut, type AppSession } from './firebase';
+import { apiFetch, authFetch, clearLocalSession, SESSION_EXPIRED_EVENT, TOKEN_KEY, USER_KEY } from './api';
 import type { Group, Settlement } from './types';
 import { useI18n } from './i18n';
 import { useTheme } from './hooks/useTheme';
@@ -88,39 +88,35 @@ export default function App() {
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
   }, []);
 
+  // Sessions are always Budgetfy tokens. A Google login left over from an older version
+  // (Firebase session, no Budgetfy token) is converted once at startup.
   useEffect(() => {
-    if (!auth) {
-      // Firebase not configured: only local (email/password) sessions exist.
+    if (!auth || localStorage.getItem(TOKEN_KEY)) {
       setAuthLoading(false);
       return;
     }
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      // If we have a local session active, don't overwrite it with a null Firebase state.
-      if (!currentUser && localStorage.getItem(TOKEN_KEY)) {
-        setAuthLoading(false);
-        return;
-      }
-      setUser(currentUser);
-      if (currentUser) {
-        setSessionExpired(false);
-        try {
-          await apiFetch('/users/sync', {
-            method: 'POST',
-            body: JSON.stringify({
-              displayName: currentUser.displayName,
-              email: currentUser.email,
-              photoURL: currentUser.photoURL,
-            }),
-          });
-        } catch (error) {
-          console.error('Error syncing user profile:', error);
+    const firebaseAuth = auth;
+    let cancelled = false;
+    (async () => {
+      try {
+        await firebaseAuth.authStateReady();
+        const leftover = firebaseAuth.currentUser;
+        if (leftover && !localStorage.getItem(TOKEN_KEY)) {
+          const data = await exchangeFirebaseSession(leftover, (endpoint, body) => authFetch<AppSession>(endpoint, body));
+          localStorage.setItem(TOKEN_KEY, data.token);
+          localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+          if (!cancelled) setUser(data.user);
         }
-      } else {
-        clearLocalSession();
+      } catch (error) {
+        console.error('Could not restore Google session:', error);
+        await logOut().catch(() => undefined);
+      } finally {
+        if (!cancelled) setAuthLoading(false);
       }
-      setAuthLoading(false);
-    });
-    return () => unsubscribe();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const refreshGroups = useCallback(async () => {

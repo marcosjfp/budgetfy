@@ -482,6 +482,7 @@ export const en = {
   'serverError.code.INVALID_TOKEN': 'Your session expired. Please sign in again.',
   'serverError.code.INVALID_CREDENTIALS': 'Invalid email or password.',
   'serverError.code.EMAIL_IN_USE': 'An account with this email already exists.',
+  'serverError.code.ACCOUNT_LINK_CONFLICT': 'This email is already linked to a different Google account. Sign in with your email and password instead.',
   'serverError.code.WEAK_PASSWORD': 'Choose a stronger password.',
   'serverError.code.FORBIDDEN': "You don't have permission to do that.",
   'serverError.code.NOT_A_MEMBER': 'You are not a member of this group.',

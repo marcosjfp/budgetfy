@@ -477,6 +477,7 @@ export const pt: Dictionary = {
   'serverError.code.INVALID_TOKEN': 'Sua sessão expirou. Entre novamente.',
   'serverError.code.INVALID_CREDENTIALS': 'E-mail ou senha inválidos.',
   'serverError.code.EMAIL_IN_USE': 'Já existe uma conta com este e-mail.',
+  'serverError.code.ACCOUNT_LINK_CONFLICT': 'Este e-mail já está vinculado a outra conta Google. Entre com seu e-mail e senha.',
   'serverError.code.WEAK_PASSWORD': 'Escolha uma senha mais forte.',
   'serverError.code.FORBIDDEN': 'Você não tem permissão para fazer isso.',
   'serverError.code.NOT_A_MEMBER': 'Você não faz parte deste grupo.',
