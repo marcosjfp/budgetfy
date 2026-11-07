@@ -83,7 +83,15 @@ export const registerSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
   displayName: displayNameSchema,
+  /** Language for the verification email. */
+  lang: z.enum(['en', 'pt']).optional(),
 });
+
+const emailTokenSchema = z.string().trim().min(20).max(200);
+export const verifyEmailSchema = z.object({ token: emailTokenSchema });
+export const resendVerificationSchema = z.object({ lang: z.enum(['en', 'pt']).optional() });
+export const forgotPasswordSchema = z.object({ email: emailSchema, lang: z.enum(['en', 'pt']).optional() });
+export const resetPasswordSchema = z.object({ token: emailTokenSchema, password: passwordSchema });
 
 export const firebaseLoginSchema = z.object({
   idToken: z.string().min(1).max(4096),

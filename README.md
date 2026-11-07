@@ -109,6 +109,9 @@ ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "participants" jsonb;
 ALTER TABLE "group_members" ADD CONSTRAINT "group_members_group_user_unique" UNIQUE ("group_id", "user_id");
 CREATE TABLE IF NOT EXISTS "rate_limits" ("key" text PRIMARY KEY, "hits" integer NOT NULL, "reset_at" timestamptz NOT NULL);
 ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "created_by" text;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "email_verified" boolean NOT NULL DEFAULT false;
+UPDATE "users" SET "email_verified" = true WHERE "firebase_uid" IS NOT NULL;
+CREATE TABLE IF NOT EXISTS "email_tokens" ("id" uuid PRIMARY KEY DEFAULT gen_random_uuid(), "user_id" text NOT NULL, "purpose" text NOT NULL, "token_hash" text NOT NULL UNIQUE, "expires_at" timestamptz NOT NULL, "used_at" timestamptz, "created_at" timestamptz DEFAULT now());
 -- One-off: dates saved at midnight UTC by older versions showed a day early west of UTC; move them to midday.
 UPDATE "expenses" SET "date" = "date" + interval '12 hours' WHERE ("date" AT TIME ZONE 'UTC')::time = '00:00:00';
 UPDATE "expenses" SET "due_date" = "due_date" + interval '12 hours' WHERE "due_date" IS NOT NULL AND ("due_date" AT TIME ZONE 'UTC')::time = '00:00:00';
@@ -171,6 +174,7 @@ New error codes: `SETTLEMENT_NOT_FOUND`, `INVALID_SETTLEMENT`. Group settings (`
 - **HTTP hardening**: `helmet` security headers, CORS restricted to `CORS_ORIGINS`, 100 kB JSON body limit, rate limiting (`express-rate-limit`) globally and stricter on login/register/email lookups. The strict limits keep their counters in Postgres (`rate_limits` table) so they hold across serverless instances. Set `TRUST_PROXY` behind a load balancer so limits apply per client IP.
 - **Sessions**: login tokens carry `users.token_version`; **Preferences → Sign out of other devices** bumps it, which invalidates every other session.
 - **Equal splits**: each equal-split expense stores its `participants` when created, so adding or removing members later doesn't change past balances.
+- **Email verification & password reset** (Resend): sign-up sends a confirmation link (48 h); "Forgot password?" sends a single-use reset link (1 h) that also signs out every session. Tokens are stored hashed (`email_tokens`). Links always use `APP_URL`, never the request host. Signing in with Google onto an account whose email was never confirmed removes that account's password and sessions (prevents account pre-hijacking). Needs `RESEND_API_KEY`, `APP_URL` and optionally `EMAIL_FROM` (a verified domain is required to email anyone other than the Resend account owner).
 - **Expense permissions**: only the person who added an expense (`created_by`), the person who paid it, or a group admin can edit or delete it (also for whole recurring series). Enforced on the server.
 - **Recurring expenses**: `POST /api/groups/:id/expenses/series` with `{ expense, recurrence: { frequency, endDate } }` creates every occurrence on the server in one statement (up to 366; monthly/yearly keep the day, clamped to month end).
 - **Dates**: calendar dates are sent as `YYYY-MM-DD` and stored at 12:00 UTC, so they show on the same day in every timezone from UTC-11 to UTC+11.

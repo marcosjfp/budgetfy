@@ -82,6 +82,14 @@ export const lookupLimiter = rateLimit({
   store: new PostgresStore('lookup:'),
 });
 
+/** Emails sent on request (verification resend, password reset): stops inbox flooding. */
+export const emailLimiter = rateLimit({
+  ...common,
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  store: new PostgresStore('email:'),
+});
+
 /** Coarse global limit for the whole API (in memory per instance, to avoid a DB write on every request). */
 export const apiLimiter = rateLimit({
   ...common,

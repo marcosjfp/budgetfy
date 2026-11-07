@@ -139,6 +139,19 @@ if (!Number.isInteger(BCRYPT_ROUNDS) || BCRYPT_ROUNDS < 10 || BCRYPT_ROUNDS > 15
   fail('BCRYPT_ROUNDS must be an integer between 10 and 15.');
 }
 
+// ---------------------------------------------------------------------------
+// Email (Resend) and links in emails
+// ---------------------------------------------------------------------------
+// Links in emails always use APP_URL, never the request's Host header (a forged Host would
+// otherwise put an attacker's domain in password-reset links).
+const APP_URL = (process.env.APP_URL || (isProduction ? '' : 'http://localhost:3000')).replace(/\/+$/, '');
+if (APP_URL && !/^https?:\/\//.test(APP_URL)) fail('APP_URL must start with http:// or https://');
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+// Without a verified domain Resend only delivers from its test sender to the account owner.
+const EMAIL_FROM = process.env.EMAIL_FROM || 'Budgetfy <onboarding@resend.dev>';
+if (!RESEND_API_KEY) warn('RESEND_API_KEY not set; emails are printed to the server log instead of sent.');
+if (isProduction && !APP_URL) warn('APP_URL not set; verification and password-reset emails are disabled.');
+
 export const config = Object.freeze({
   nodeEnv: NODE_ENV,
   isProduction,
@@ -155,4 +168,6 @@ export const config = Object.freeze({
   corsOrigins: CORS_ORIGINS,
   trustProxy: TRUST_PROXY,
   bcryptRounds: BCRYPT_ROUNDS,
+  appUrl: APP_URL || null,
+  email: Object.freeze({ resendApiKey: RESEND_API_KEY || null, from: EMAIL_FROM }),
 });

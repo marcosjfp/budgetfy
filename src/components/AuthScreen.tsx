@@ -7,6 +7,7 @@ import { useI18n, type TranslationKey } from '../i18n';
 import type { Theme } from '../hooks/useTheme';
 import LanguageSwitcher from './LanguageSwitcher';
 import { Button, IconButton, TextField } from './ui';
+import { ForgotPasswordModal } from './auth/ForgotPasswordModal';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 interface AuthScreenProps {
@@ -40,8 +41,9 @@ function GoogleLogo() {
 }
 
 export default function AuthScreen({ onAuthenticated, sessionExpired, theme, onToggleTheme }: AuthScreenProps) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [isSignUp, setIsSignUp] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -87,7 +89,7 @@ export default function AuthScreen({ onAuthenticated, sessionExpired, theme, onT
     setSubmitting(true);
     try {
       const data = isSignUp
-        ? await authFetch<{ token: string; user: any }>('/auth/register', { email: email.trim(), password, displayName: displayName.trim() })
+        ? await authFetch<{ token: string; user: any }>('/auth/register', { email: email.trim(), password, displayName: displayName.trim(), lang })
         : await authFetch<{ token: string; user: any }>('/auth/login', { email: email.trim(), password });
       localStorage.setItem(TOKEN_KEY, data.token);
       localStorage.setItem(USER_KEY, JSON.stringify(data.user));
@@ -279,10 +281,19 @@ export default function AuthScreen({ onAuthenticated, sessionExpired, theme, onT
                 }
               />
 
+              {!isSignUp && (
+                <div className="-mt-1 flex justify-end">
+                  <button type="button" onClick={() => setForgotOpen(true)} className="text-sm font-medium text-brand-700 dark:text-brand-300 hover:underline rounded-control">
+                    {t('forgot.link')}
+                  </button>
+                </div>
+              )}
+
               <Button type="submit" size="lg" fullWidth loading={submitting} disabled={googleLoading}>
                 {submitting ? t('auth.pleaseWait') : isSignUp ? t('auth.createAccount') : t('auth.signIn')}
               </Button>
             </form>
+            <ForgotPasswordModal open={forgotOpen} onClose={() => setForgotOpen(false)} initialEmail={email.trim()} />
 
             {firebaseEnabled && (
               <>

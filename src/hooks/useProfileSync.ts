@@ -15,6 +15,7 @@ export interface Profile {
   email: string | null;
   photoURL: string | null;
   preferences: Preferences;
+  emailVerified?: boolean;
 }
 
 const isLang = (v: unknown): v is Lang => v === 'en' || v === 'pt';

@@ -19,7 +19,7 @@ const publicColumns = {
 };
 
 /** The signed-in user's own profile: public columns + synced preferences. */
-const selfColumns = { ...publicColumns, preferences: users.preferences };
+const selfColumns = { ...publicColumns, preferences: users.preferences, emailVerified: users.emailVerified };
 
 async function loadSelf(uid: string) {
   const [user] = await db.select(selfColumns).from(users).where(eq(users.uid, uid)).limit(1);

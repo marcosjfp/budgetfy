@@ -17,6 +17,8 @@ import { normalizeExpense, normalizeGroup, normalizeSettlement, isOverdue, type 
 import { flushPendingDeletes } from './utils/undo';
 
 import AuthScreen from './components/AuthScreen';
+import EmailLinkScreen, { emailLinkFromLocation } from './components/auth/EmailLinkScreen';
+import { VerifyEmailBanner } from './components/auth/VerifyEmailBanner';
 import Sidebar, { type MainView } from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import CreateGroupModal from './components/CreateGroupModal';
@@ -37,6 +39,9 @@ function readLocalUser() {
     return null;
   }
 }
+
+// Opened from an email link (/verify-email or /reset-password)? Read once at startup.
+const emailLink = emailLinkFromLocation();
 
 export default function App() {
   const { t } = useI18n();
@@ -217,6 +222,10 @@ export default function App() {
     setUser(null);
   };
 
+  if (emailLink) {
+    return <EmailLinkScreen kind={emailLink.kind} token={emailLink.token} />;
+  }
+
   if (authLoading) {
     return (
       <div className="flex min-h-dvh bg-canvas">
@@ -249,6 +258,8 @@ export default function App() {
   }
 
   const viewKey = selectedGroupId ?? currentView;
+  // Server profile wins; the login response is the fallback until it loads.
+  const emailUnverified = (profile?.emailVerified ?? user?.emailVerified) === false;
 
   return (
     <div className="flex min-h-dvh bg-canvas">
@@ -305,6 +316,7 @@ export default function App() {
               transition={{ duration: 0.18 }}
               className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-10 py-6 sm:py-8 lg:py-10 pb-24"
             >
+              {emailUnverified && viewUser?.email && <VerifyEmailBanner email={viewUser.email} />}
               <Suspense
                 fallback={
                   <LoadingRegion label={t('common.loading')}>

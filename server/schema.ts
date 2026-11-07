@@ -5,6 +5,8 @@ export const users = pgTable('users', {
   displayName: text('display_name'),
   email: text('email').unique(),
   passwordHash: text('password_hash'),
+  /** True once the owner proved they read this inbox (email link, password reset or Google). */
+  emailVerified: boolean('email_verified').notNull().default(false),
   /** Firebase (Google) account linked to this user, if any. */
   firebaseUid: text('firebase_uid').unique(),
   /** Bumped by "sign out of other devices": tokens carrying an older version are rejected. */
@@ -95,4 +97,18 @@ export const rateLimits = pgTable('rate_limits', {
   key: text('key').primaryKey(),
   hits: integer('hits').notNull(),
   resetAt: timestamp('reset_at', { withTimezone: true }).notNull(),
+});
+
+/**
+ * Single-use links sent by email (verify address, reset password). Only a SHA-256 hash of the
+ * token is stored, so a database leak doesn't expose usable links.
+ */
+export const emailTokens = pgTable('email_tokens', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: text('user_id').notNull(),
+  purpose: text('purpose').notNull(), // 'verify' | 'reset'
+  tokenHash: text('token_hash').notNull().unique(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
