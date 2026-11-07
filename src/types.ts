@@ -24,6 +24,8 @@ export interface Group {
   maxBudget?: number;
   budgetType?: BudgetType;
   themeColor?: string;
+  /** Display currency for this group's amounts; null/undefined = the viewer's preferred currency. */
+  currency?: 'BRL' | 'USD' | 'EUR' | 'GBP' | null;
 }
 
 export interface GroupMember {
@@ -48,6 +50,19 @@ export interface Expense {
   splitDetails?: Record<string, number>;
   isRecurring?: boolean;
   recurrenceId?: string;
+}
+
+/** A settle-up payment: `fromUser` paid `toUser` `amount` in the group's currency. */
+export interface Settlement {
+  id: string;
+  groupId: string;
+  fromUser: string;
+  toUser: string;
+  amount: number;
+  date: AppTimestamp;
+  note?: string | null;
+  createdBy: string;
+  createdAt: AppTimestamp;
 }
 
 export const CATEGORIES = [

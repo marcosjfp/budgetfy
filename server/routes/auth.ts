@@ -1,75 +1,90 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
-import { db } from '../db.js';
+import crypto from 'crypto';
+import { sql } from 'drizzle-orm';
+import { db, DbInsert } from '../db.js';
 import { users } from '../schema.js';
-import { eq } from 'drizzle-orm';
+import { config } from '../config.js';
+import { asyncHandler, HttpError } from '../errors.js';
+import { signLocalToken } from '../middleware/auth.js';
+import { loginLimiter, registerLimiter } from '../middleware/rateLimit.js';
+import { loginSchema, registerSchema } from '../validation.js';
 
 const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-fallback-key';
 
-router.post('/register', async (req, res) => {
-  try {
-    const { email, password, displayName } = req.body;
-    
-    if (!email || !password || !displayName) {
-      return res.status(400).json({ error: 'Missing required fields' });
+// Used to equalise response time when the account doesn't exist (prevents timing-based enumeration).
+const DUMMY_HASH = bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), config.bcryptRounds);
+
+function publicUser(user: typeof users.$inferSelect) {
+  return { uid: user.uid, email: user.email, displayName: user.displayName, photoURL: user.photoURL };
+}
+
+async function findUserByEmail(email: string) {
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(sql`lower(${users.email}) = ${email.toLowerCase()}`)
+    .limit(1);
+  return user;
+}
+
+router.post(
+  '/register',
+  registerLimiter,
+  asyncHandler(async (req, res) => {
+    const { email, password, displayName } = registerSchema.parse(req.body);
+
+    if (await findUserByEmail(email)) {
+      // Note: this reveals that the email is registered. Unavoidable without an email-verification
+      // flow; mitigated by registerLimiter.
+      throw new HttpError(409, 'EMAIL_IN_USE', 'An account with this email already exists.');
     }
 
-    const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    if (existing) {
-      return res.status(400).json({ error: 'An account with this email already exists.' });
-    }
-
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(password, salt);
+    const passwordHash = await bcrypt.hash(password, config.bcryptRounds);
     const uid = crypto.randomUUID();
 
-    const userData: any = {
-      uid,
-      email,
-      passwordHash,
-      displayName,
-      photoURL: `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=random`
-    };
-
-    const [user] = await db.insert(users).values(userData as any).returning();
-
-    const token = jwt.sign({ uid: user.uid, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-
-    res.status(201).json({ token, user: { uid: user.uid, email: user.email, displayName: user.displayName, photoURL: user.photoURL } });
-  } catch (err) {
-    console.error('Registration error:', err);
-    res.status(500).json({ error: 'Registration failed' });
-  }
-});
-
-router.post('/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    let user: typeof users.$inferSelect;
+    try {
+      [user] = await db
+        .insert(users)
+        .values({
+          uid,
+          email,
+          passwordHash,
+          displayName,
+          photoURL: `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=random`,
+        } as DbInsert<typeof users>)
+        .returning();
+    } catch (err) {
+      // Unique violation from a concurrent registration.
+      if ((err as { code?: string }).code === '23505') {
+        throw new HttpError(409, 'EMAIL_IN_USE', 'An account with this email already exists.');
+      }
+      throw err;
     }
 
-    const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    
-    if (!user || !user.passwordHash) {
-      return res.status(400).json({ error: 'Invalid email or password.' });
+    const token = signLocalToken({ uid: user.uid, email: user.email ?? undefined });
+    res.status(201).json({ token, user: publicUser(user) });
+  }),
+);
+
+router.post(
+  '/login',
+  loginLimiter,
+  asyncHandler(async (req, res) => {
+    const { email, password } = loginSchema.parse(req.body);
+
+    const user = await findUserByEmail(email);
+    // Always run bcrypt so response time doesn't reveal whether the account exists.
+    const validPassword = await bcrypt.compare(password, user?.passwordHash || DUMMY_HASH);
+
+    if (!user || !user.passwordHash || !validPassword) {
+      throw new HttpError(401, 'INVALID_CREDENTIALS', 'Invalid email or password.');
     }
 
-    const validPassword = await bcrypt.compare(password, user.passwordHash);
-    if (!validPassword) {
-      return res.status(400).json({ error: 'Invalid email or password.' });
-    }
-
-    const token = jwt.sign({ uid: user.uid, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-
-    res.json({ token, user: { uid: user.uid, email: user.email, displayName: user.displayName, photoURL: user.photoURL } });
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: 'Login failed' });
-  }
-});
+    const token = signLocalToken({ uid: user.uid, email: user.email ?? undefined });
+    res.json({ token, user: publicUser(user) });
+  }),
+);
 
 export default router;

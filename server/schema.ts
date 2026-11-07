@@ -6,6 +6,8 @@ export const users = pgTable('users', {
   email: text('email').unique(),
   passwordHash: text('password_hash'),
   photoURL: text('photo_url'),
+  /** UI preferences synced across devices: { language?, currency?, theme? }. */
+  preferences: jsonb('preferences').default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
@@ -19,6 +21,12 @@ export const groups = pgTable('groups', {
   maxBudget: numeric('max_budget'),
   budgetType: text('budget_type').default('total'),
   themeColor: text('theme_color'),
+  /**
+   * ISO 4217 code (BRL/USD/EUR/GBP) used to display this group's amounts.
+   * NULL for groups created before per-group currencies existed: the client then falls back
+   * to the viewer's preferred currency (the previous behaviour).
+   */
+  currency: text('currency'),
 });
 
 export const groupMembers = pgTable('group_members', {
@@ -46,4 +54,20 @@ export const expenses = pgTable('expenses', {
   splitDetails: jsonb('split_details').default({}),
   isRecurring: boolean('is_recurring').default(false),
   recurrenceId: text('recurrence_id'),
+});
+
+/**
+ * Settle-up payments: `fromUser` paid `toUser` `amount` (in the group's currency) outside the app.
+ * Balances are derived from expenses (+ who paid / splitDetails) plus these records.
+ */
+export const settlements = pgTable('settlements', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  groupId: uuid('group_id').notNull(),
+  fromUser: text('from_user').notNull(),
+  toUser: text('to_user').notNull(),
+  amount: numeric('amount').notNull(),
+  date: timestamp('date', { withTimezone: true }).notNull().defaultNow(),
+  note: text('note'),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });

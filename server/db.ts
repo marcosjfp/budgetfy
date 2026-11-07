@@ -1,17 +1,19 @@
+import type { PgTable } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema.js';
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { config } from './config.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
+const pool = new Pool({ connectionString: config.databaseUrl });
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL is not set in .env.local');
-}
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// Prevent an idle-client error (e.g. DB restart) from crashing the process.
+pool.on('error', (err) => {
+  console.error('[db] Unexpected idle client error:', err.message);
+});
 
 export const db = drizzle(pool, { schema });
+
+// tsconfig isn't `strict`, so Drizzle's $inferInsert drops nullable columns. Route handlers build
+// payloads from zod-validated, explicitly whitelisted fields and cast with these aliases.
+export type DbInsert<T extends PgTable> = T['$inferInsert'];
+export type DbUpdate<T extends PgTable> = Partial<T['$inferInsert']>;

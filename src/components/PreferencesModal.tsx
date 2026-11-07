@@ -1,0 +1,137 @@
+import React, { useId, useState } from 'react';
+import { Moon, Sun } from 'lucide-react';
+import { SUPPORTED_CURRENCIES, useI18n, type Currency } from '../i18n';
+import type { Theme } from '../hooks/useTheme';
+import { useCurrencyNames } from '../hooks/useCurrencyNames';
+import { describeError } from '../api';
+import LanguageSwitcher from './LanguageSwitcher';
+import { Button, FieldsetLabel, Modal, SegmentedControl, SelectField, TextField, toast } from './ui';
+
+interface PreferencesModalProps {
+  open: boolean;
+  onClose: () => void;
+  theme: Theme;
+  onThemeChange: (theme: Theme) => void;
+  displayName: string;
+  email: string | null;
+  /** False when the server profile couldn't be loaded (name editing disabled). */
+  profileAvailable: boolean;
+  onSaveDisplayName: (name: string) => Promise<unknown>;
+}
+
+/** Profile (display name) and preferences: language, display currency and theme (synced to the account). */
+export default function PreferencesModal({ open, onClose, theme, onThemeChange, displayName, email, profileAvailable, onSaveDisplayName }: PreferencesModalProps) {
+  const { t, currency, setCurrency, formatCurrency } = useI18n();
+  const langLabelId = useId();
+  const themeLabelId = useId();
+  const [name, setName] = useState(displayName);
+  const [nameError, setNameError] = useState<string | undefined>();
+  const [savingName, setSavingName] = useState(false);
+  const [lastOpen, setLastOpen] = useState(open);
+
+  // Reset the name field from the latest value each time the dialog opens.
+  if (open !== lastOpen) {
+    setLastOpen(open);
+    if (open) {
+      setName(displayName);
+      setNameError(undefined);
+    }
+  }
+
+  const saveName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setNameError(t('auth.displayNameRequired'));
+      return;
+    }
+    if (trimmed === displayName) return;
+    setSavingName(true);
+    setNameError(undefined);
+    try {
+      await onSaveDisplayName(trimmed);
+      setName(trimmed);
+      toast.success(t('profile.nameSaved'));
+    } catch (err) {
+      setNameError(describeError(err));
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  const currencyNames = useCurrencyNames();
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={t('prefs.title')}
+      description={t('prefs.description')}
+      size="md"
+      footer={
+        <Button onClick={onClose} data-autofocus>
+          {t('common.done')}
+        </Button>
+      }
+    >
+      <div className="space-y-6 pb-2">
+        <form onSubmit={saveName} noValidate className="space-y-3 pb-6 border-b border-line">
+          <p className="text-sm font-semibold text-fg">{t('profile.title')}</p>
+          <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+            <TextField
+              containerClassName="flex-1"
+              label={t('profile.displayName')}
+              hint={email ? t('profile.signedInAs', { email }) : undefined}
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameError(undefined);
+              }}
+              autoComplete="name"
+              maxLength={100}
+              required
+              error={nameError}
+              disabled={!profileAvailable}
+            />
+            <Button type="submit" variant="secondary" loading={savingName} disabled={!profileAvailable || name.trim() === displayName} className="sm:mt-7">
+              {t('profile.saveName')}
+            </Button>
+          </div>
+        </form>
+
+        <div className="flex flex-col gap-1.5">
+          <FieldsetLabel id={langLabelId}>{t('prefs.language')}</FieldsetLabel>
+          <LanguageSwitcher long labelledBy={langLabelId} />
+        </div>
+
+        <SelectField
+          label={t('prefs.currency')}
+          hint={t('prefs.currencyHint', { example: formatCurrency(1234.5) })}
+          value={currency}
+          onChange={(e) => setCurrency(e.target.value as Currency)}
+        >
+          {SUPPORTED_CURRENCIES.map((c) => (
+            <option key={c} value={c}>
+              {c} — {currencyNames[c]}
+            </option>
+          ))}
+        </SelectField>
+
+        <div className="flex flex-col gap-1.5">
+          <FieldsetLabel id={themeLabelId}>{t('prefs.theme')}</FieldsetLabel>
+          <SegmentedControl<Theme>
+            fullWidth
+            label={t('prefs.theme')}
+            labelledBy={themeLabelId}
+            value={theme}
+            onChange={onThemeChange}
+            options={[
+              { value: 'light', label: t('prefs.light'), icon: <Sun /> },
+              { value: 'dark', label: t('prefs.dark'), icon: <Moon /> },
+            ]}
+          />
+        </div>
+      </div>
+    </Modal>
+  );
+}
