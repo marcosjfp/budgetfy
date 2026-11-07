@@ -1,4 +1,6 @@
 import React, { ErrorInfo, ReactNode } from 'react';
+import { AlertTriangle } from 'lucide-react';
+import { t } from '../i18n/core';
 
 interface Props {
   children: ReactNode;
@@ -28,32 +30,33 @@ export default class ErrorBoundary extends React.Component<Props, State> {
 
   public render() {
     if (this.state.hasError) {
-      let errorMessage = "Something went wrong.";
+      let errorMessage = t('errors.somethingWrong');
       try {
         const parsed = JSON.parse(this.state.error?.message || "");
         if (parsed.error && parsed.error.includes("insufficient permissions")) {
-          errorMessage = "You don't have permission to perform this action or view this data.";
+          errorMessage = t('errors.noPermission');
         }
       } catch (e) {
         // Not a JSON error
       }
 
       return (
-        <div className="min-h-screen flex items-center justify-center bg-[#F5F5F0] p-4">
-          <div className="max-w-md w-full bg-white p-8 rounded-[32px] shadow-sm border border-red-100 text-center">
-            <div className="w-16 h-16 bg-red-50 rounded-2xl flex items-center justify-center mx-auto mb-6">
-              <span className="text-2xl">⚠️</span>
+        <main className="min-h-dvh flex items-center justify-center bg-canvas p-4">
+          <div role="alert" className="max-w-md w-full bg-surface p-8 rounded-dialog shadow-raised border border-line text-center">
+            <div className="size-14 bg-red-50 dark:bg-red-500/15 text-red-600 dark:text-red-300 rounded-2xl flex items-center justify-center mx-auto mb-6">
+              <AlertTriangle className="size-7" aria-hidden="true" />
             </div>
-            <h2 className="text-2xl font-serif mb-4">Application Error</h2>
-            <p className="text-stone-500 mb-8">{errorMessage}</p>
+            <h1 className="text-2xl font-semibold font-display text-fg mb-3">{t('errors.appError')}</h1>
+            <p className="text-fg-muted mb-8">{errorMessage}</p>
             <button
+              type="button"
               onClick={() => window.location.reload()}
-              className="px-8 py-3 bg-stone-900 text-white rounded-xl font-medium hover:bg-stone-800 transition-colors"
+              className="h-11 px-6 bg-brand-600 text-white rounded-control font-semibold hover:bg-brand-700 transition-colors"
             >
-              Reload Application
+              {t('errors.reload')}
             </button>
           </div>
-        </div>
+        </main>
       );
     }
 

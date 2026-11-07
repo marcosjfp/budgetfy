@@ -1,8 +1,20 @@
 import { Router } from 'express';
-import { db } from '../db.js';
-import { groups, groupMembers, users } from '../schema.js';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { db, DbInsert, DbUpdate } from '../db.js';
+import { expenses, groups, groupMembers, settlements, users } from '../schema.js';
+import { asyncHandler, HttpError } from '../errors.js';
 import { requireAuth, AuthRequest } from '../middleware/auth.js';
+import { getMembership, requireAdmin, requireGroupForMember, requireMembership } from '../middleware/groupAccess.js';
+import { lookupLimiter } from '../middleware/rateLimit.js';
+import {
+  addMemberSchema,
+  createGroupSchema,
+  currencySchema,
+  groupParamsSchema,
+  memberParamsSchema,
+  updateGroupSchema,
+  updateMemberRoleSchema,
+} from '../validation.js';
 
 const router = Router();
 
@@ -25,9 +37,15 @@ async function serializeGroup(group: typeof groups.$inferSelect) {
   };
 }
 
+function requireOwner(group: typeof groups.$inferSelect, uid: string) {
+  if (group.createdBy !== uid) throw new HttpError(403, 'OWNER_REQUIRED', 'Only the group owner can do this');
+}
+
 // GET /api/groups — all groups where current user is a member
-router.get('/', requireAuth, async (req: AuthRequest, res) => {
-  try {
+router.get(
+  '/',
+  requireAuth,
+  asyncHandler<AuthRequest>(async (req, res) => {
     const uid = req.uid!;
     const memberRows = await db
       .select({ groupId: groupMembers.groupId })
@@ -39,240 +57,220 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
     const groupIds = memberRows.map((r) => r.groupId);
     const groupRows = await db.select().from(groups).where(inArray(groups.id, groupIds));
 
-    const result = await Promise.all(groupRows.map(serializeGroup));
-    res.json(result);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to fetch groups' });
-  }
-});
+    res.json(await Promise.all(groupRows.map(serializeGroup)));
+  }),
+);
 
 // POST /api/groups — create a new group
-router.post('/', requireAuth, async (req: AuthRequest, res) => {
-  try {
+router.post(
+  '/',
+  requireAuth,
+  asyncHandler<AuthRequest>(async (req, res) => {
     const uid = req.uid!;
-    const { name, description, type, themeColor, maxBudget, budgetType } = req.body;
+    const { name, description, type, themeColor, maxBudget, budgetType, currency } = createGroupSchema.parse(req.body);
 
-    const groupData: any = {
-      name: name.trim(),
-      description: description?.trim() || '',
-      type: type || 'other',
-      themeColor: themeColor || null,
-      maxBudget: maxBudget ? String(maxBudget) : null,
-      budgetType: maxBudget ? (budgetType || 'total') : 'total',
-      createdBy: uid,
-    };
+    const group = await db.transaction(async (tx) => {
+      const [userRow] = await tx
+        .select({ displayName: users.displayName, email: users.email, preferences: users.preferences })
+        .from(users)
+        .where(eq(users.uid, uid))
+        .limit(1);
+      // Currency: explicit choice, else the creator's synced preference, else NULL (= viewer's preference).
+      const preferred = currencySchema.safeParse((userRow?.preferences as { currency?: unknown } | null)?.currency);
+      const groupCurrency = currency ?? (preferred.success ? preferred.data : null);
 
-    const [group] = await db.insert(groups).values(groupData as any).returning();
+      const [created] = await tx
+        .insert(groups)
+        .values({
+          name,
+          description: description || '',
+          type: type || 'other',
+          themeColor: themeColor || null,
+          maxBudget: maxBudget ? String(maxBudget) : null,
+          budgetType: maxBudget ? budgetType || 'total' : 'total',
+          currency: groupCurrency,
+          createdBy: uid,
+        } as DbInsert<typeof groups>)
+        .returning();
 
-    // Add creator as admin member
-    const [userRow] = await db.select().from(users).where(eq(users.uid, uid)).limit(1);
-    const memberData: any = {
-      groupId: group.id,
-      userId: uid,
-      role: 'admin',
-      displayName: userRow?.displayName || null,
-      email: userRow?.email || null,
-    };
-    await db.insert(groupMembers).values(memberData as any);
+      // Add creator as admin member
+      await tx.insert(groupMembers).values({
+        groupId: created.id,
+        userId: uid,
+        role: 'admin',
+        displayName: userRow?.displayName || null,
+        email: userRow?.email || null,
+      } as DbInsert<typeof groupMembers>);
+      return created;
+    });
 
     res.status(201).json(await serializeGroup(group));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to create group' });
-  }
-});
+  }),
+);
 
 // GET /api/groups/:id
-router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const uid = req.uid!;
-    const { id } = req.params;
-
-    const [group] = await db.select().from(groups).where(eq(groups.id, id)).limit(1);
-    if (!group) return res.status(404).json({ error: 'Group not found' });
-
-    // Verify membership
-    const [member] = await db
-      .select()
-      .from(groupMembers)
-      .where(and(eq(groupMembers.groupId, id), eq(groupMembers.userId, uid)))
-      .limit(1);
-    if (!member) return res.status(403).json({ error: 'Not a member' });
-
+router.get(
+  '/:id',
+  requireAuth,
+  asyncHandler<AuthRequest>(async (req, res) => {
+    const { id } = groupParamsSchema.parse(req.params);
+    const { group } = await requireGroupForMember(id, req.uid!);
     res.json(await serializeGroup(group));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to fetch group' });
-  }
-});
+  }),
+);
 
-// PATCH /api/groups/:id — update settings
-router.patch('/:id', requireAuth, async (req: AuthRequest, res) => {
-  try {
+// PATCH /api/groups/:id — update settings (admins; the owner is always an admin)
+router.patch(
+  '/:id',
+  requireAuth,
+  asyncHandler<AuthRequest>(async (req, res) => {
     const uid = req.uid!;
-    const { id } = req.params;
-    const { name, description, themeColor, maxBudget, budgetType } = req.body;
+    const { id } = groupParamsSchema.parse(req.params);
+    const { name, description, themeColor, maxBudget, budgetType, currency } = updateGroupSchema.parse(req.body);
 
-    const [group] = await db.select().from(groups).where(eq(groups.id, id)).limit(1);
-    if (!group) return res.status(404).json({ error: 'Not found' });
-    if (group.createdBy !== uid) return res.status(403).json({ error: 'Forbidden' });
+    const { group, member } = await requireGroupForMember(id, uid);
+    if (member.role !== 'admin') throw new HttpError(403, 'ADMIN_REQUIRED', 'Only group admins can change settings');
 
-    const updateData: any = {
-      name: name?.trim() || group.name,
-      description: description?.trim() ?? group.description,
-      themeColor: themeColor ?? group.themeColor,
-      maxBudget: maxBudget != null ? String(maxBudget) : null,
-      budgetType: maxBudget != null ? (budgetType || 'total') : 'total',
-    };
-
-    const [updated] = await db.update(groups).set(updateData as any).where(eq(groups.id, id)).returning();
+    const [updated] = await db
+      .update(groups)
+      .set({
+        name: name || group.name,
+        description: description ?? group.description,
+        themeColor: themeColor ?? group.themeColor,
+        // Preserves existing semantics: omitting maxBudget clears it.
+        maxBudget: maxBudget != null ? String(maxBudget) : null,
+        budgetType: maxBudget != null ? budgetType || 'total' : 'total',
+        currency: currency ?? group.currency,
+      } as DbUpdate<typeof groups>)
+      .where(eq(groups.id, id))
+      .returning();
 
     res.json(await serializeGroup(updated));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to update group' });
-  }
-});
+  }),
+);
 
-// DELETE /api/groups/:id
-router.delete('/:id', requireAuth, async (req: AuthRequest, res) => {
-  try {
+// DELETE /api/groups/:id (owner only) — also removes members, expenses and settlements
+router.delete(
+  '/:id',
+  requireAuth,
+  asyncHandler<AuthRequest>(async (req, res) => {
     const uid = req.uid!;
-    const { id } = req.params;
+    const { id } = groupParamsSchema.parse(req.params);
 
-    const [group] = await db.select().from(groups).where(eq(groups.id, id)).limit(1);
-    if (!group) return res.status(404).json({ error: 'Not found' });
-    if (group.createdBy !== uid) return res.status(403).json({ error: 'Forbidden' });
+    const { group } = await requireGroupForMember(id, uid);
+    requireOwner(group, uid);
 
-    await db.delete(groups).where(eq(groups.id, id));
+    await db.transaction(async (tx) => {
+      await tx.delete(expenses).where(eq(expenses.groupId, id));
+      await tx.delete(settlements).where(eq(settlements.groupId, id));
+      await tx.delete(groupMembers).where(eq(groupMembers.groupId, id));
+      await tx.delete(groups).where(eq(groups.id, id));
+    });
     res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to delete group' });
-  }
-});
+  }),
+);
 
 // GET /api/groups/:id/members
-router.get('/:id/members', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const uid = req.uid!;
-    const { id } = req.params;
-
-    const [isMember] = await db
-      .select()
-      .from(groupMembers)
-      .where(and(eq(groupMembers.groupId, id), eq(groupMembers.userId, uid)))
-      .limit(1);
-    if (!isMember) return res.status(403).json({ error: 'Not a member' });
+router.get(
+  '/:id/members',
+  requireAuth,
+  asyncHandler<AuthRequest>(async (req, res) => {
+    const { id } = groupParamsSchema.parse(req.params);
+    await requireMembership(id, req.uid!);
 
     const members = await db.select().from(groupMembers).where(eq(groupMembers.groupId, id));
-    res.json(members.map((m) => ({ uid: m.userId, role: m.role, joinedAt: m.joinedAt, displayName: m.displayName, email: m.email })));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to fetch members' });
-  }
-});
+    res.json(
+      members.map((m) => ({ uid: m.userId, role: m.role, joinedAt: m.joinedAt, displayName: m.displayName, email: m.email })),
+    );
+  }),
+);
 
-// POST /api/groups/:id/members — add member by email
-router.post('/:id/members', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const uid = req.uid!;
-    const { id } = req.params;
-    const { email } = req.body;
+// POST /api/groups/:id/members — add member by email (admins only)
+router.post(
+  '/:id/members',
+  requireAuth,
+  lookupLimiter,
+  asyncHandler<AuthRequest>(async (req, res) => {
+    const { id } = groupParamsSchema.parse(req.params);
+    const { email } = addMemberSchema.parse(req.body);
+    await requireAdmin(id, req.uid!);
 
-    // Verify requester is admin
-    const [requester] = await db
-      .select()
-      .from(groupMembers)
-      .where(and(eq(groupMembers.groupId, id), eq(groupMembers.userId, uid)))
+    const [targetUser] = await db
+      .select({ uid: users.uid, displayName: users.displayName, email: users.email })
+      .from(users)
+      .where(sql`lower(${users.email}) = ${email}`)
       .limit(1);
-    if (!requester || requester.role !== 'admin') {
-      return res.status(403).json({ error: 'Only admins can add members' });
+    if (!targetUser) {
+      throw new HttpError(404, 'USER_NOT_FOUND', 'No user found with that email. They must sign in first.');
     }
 
-    // Find user by email
-    const [targetUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    if (!targetUser) return res.status(404).json({ error: 'No user found with that email. They must sign in first.' });
-
-    // Check not already a member
-    const [existing] = await db
-      .select()
-      .from(groupMembers)
-      .where(and(eq(groupMembers.groupId, id), eq(groupMembers.userId, targetUser.uid)))
-      .limit(1);
-    if (existing) return res.status(409).json({ error: 'User is already a member' });
-
-    const memberData: any = {
-      groupId: id,
-      userId: targetUser.uid,
-      role: 'member',
-      displayName: targetUser.displayName,
-      email: targetUser.email,
-    };
-
-    await db.insert(groupMembers).values(memberData as any);
-
-    res.status(201).json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to add member' });
-  }
-});
-
-// PATCH /api/groups/:id/members/:uid — change member role
-router.patch('/:id/members/:uid', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const requesterUid = req.uid!;
-    const { id, uid } = req.params;
-    const { role } = req.body;
-
-    // Verify requester is admin
-    const [requester] = await db
-      .select()
-      .from(groupMembers)
-      .where(and(eq(groupMembers.groupId, id), eq(groupMembers.userId, requesterUid)))
-      .limit(1);
-    
-    if (!requester || requester.role !== 'admin') {
-      return res.status(403).json({ error: 'Only admins can change roles' });
+    if (await getMembership(id, targetUser.uid)) {
+      throw new HttpError(409, 'ALREADY_MEMBER', 'User is already a member');
     }
 
-    await db.update(groupMembers)
-      .set({ role } as any)
+    const [created] = await db
+      .insert(groupMembers)
+      .values({
+        groupId: id,
+        userId: targetUser.uid,
+        role: 'member',
+        displayName: targetUser.displayName,
+        email: targetUser.email,
+      } as DbInsert<typeof groupMembers>)
+      .returning();
+
+    // `ok` kept for older clients; `member` has the same shape as GET /:id/members items.
+    res.status(201).json({
+      ok: true,
+      member: { uid: created.userId, role: created.role, joinedAt: created.joinedAt, displayName: created.displayName, email: created.email },
+    });
+  }),
+);
+
+// PATCH /api/groups/:id/members/:uid — change member role (admins only; owner's role is fixed)
+router.patch(
+  '/:id/members/:uid',
+  requireAuth,
+  asyncHandler<AuthRequest>(async (req, res) => {
+    const { id, uid } = memberParamsSchema.parse(req.params);
+    const { role } = updateMemberRoleSchema.parse(req.body);
+
+    const { group, member: requester } = await requireGroupForMember(id, req.uid!);
+    if (requester.role !== 'admin') throw new HttpError(403, 'ADMIN_REQUIRED', 'Only admins can change roles');
+    if (uid === group.createdBy) {
+      throw new HttpError(403, 'OWNER_PROTECTED', "The group owner's role cannot be changed");
+    }
+    if (!(await getMembership(id, uid))) throw new HttpError(404, 'MEMBER_NOT_FOUND', 'Member not found');
+
+    await db
+      .update(groupMembers)
+      .set({ role } as DbUpdate<typeof groupMembers>)
       .where(and(eq(groupMembers.groupId, id), eq(groupMembers.userId, uid)));
 
     res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to update member role' });
-  }
-});
+  }),
+);
 
-// DELETE /api/groups/:id/members/:uid — remove member
-router.delete('/:id/members/:uid', requireAuth, async (req: AuthRequest, res) => {
-  try {
+// DELETE /api/groups/:id/members/:uid — remove member (admins), or leave the group (self)
+router.delete(
+  '/:id/members/:uid',
+  requireAuth,
+  asyncHandler<AuthRequest>(async (req, res) => {
     const requesterUid = req.uid!;
-    const { id, uid } = req.params;
+    const { id, uid } = memberParamsSchema.parse(req.params);
 
-    // Verify requester is admin OR is the user themselves (leaving the group)
-    const [requester] = await db
-      .select()
-      .from(groupMembers)
-      .where(and(eq(groupMembers.groupId, id), eq(groupMembers.userId, requesterUid)))
-      .limit(1);
-    
-    if (!requester || (requester.role !== 'admin' && requesterUid !== uid)) {
-      return res.status(403).json({ error: 'Only admins can remove other members' });
+    const { group, member: requester } = await requireGroupForMember(id, requesterUid);
+    if (requester.role !== 'admin' && requesterUid !== uid) {
+      throw new HttpError(403, 'ADMIN_REQUIRED', 'Only admins can remove other members');
     }
+    if (uid === group.createdBy) {
+      throw new HttpError(403, 'OWNER_PROTECTED', 'The group owner cannot be removed; delete the group instead');
+    }
+    if (!(await getMembership(id, uid))) throw new HttpError(404, 'MEMBER_NOT_FOUND', 'Member not found');
 
     await db.delete(groupMembers).where(and(eq(groupMembers.groupId, id), eq(groupMembers.userId, uid)));
-
     res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to remove member' });
-  }
-});
+  }),
+);
 
 export default router;

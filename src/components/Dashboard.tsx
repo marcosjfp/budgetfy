@@ -1,670 +1,636 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { 
-  TrendingUp, 
-  TrendingDown, 
-  Users, 
-  Receipt, 
-  ArrowRight,
-  Plus,
-  Wallet,
-  Calendar,
-  Pencil,
-  Trash2,
-  Loader2,
-  X,
-  Clock,
-  AlertCircle
-} from 'lucide-react';
-import { Group, Expense, BudgetType, CATEGORIES } from '../types';
-import { User } from 'firebase/auth';
-import { formatCurrency } from '../utils/format';
+import React, { useMemo, useState } from 'react';
+import { motion } from 'motion/react';
+import { Users, Receipt, ArrowRight, Plus, Pencil, Trash2, Clock, AlertTriangle, CircleCheck, Wallet, CalendarClock, FolderPlus, HandCoins } from 'lucide-react';
+import type { User } from 'firebase/auth';
+import { CATEGORIES, type Group, type Settlement } from '../types';
+import { useI18n, CurrencyScope, CATEGORY_KEYS, BUDGET_PERIOD_KEYS, type Currency } from '../i18n';
+import { deleteWithUndo } from '../utils/undo';
+import { fromCents, settleUp } from '../utils/settle';
 import { handleFirestoreError, OperationType } from '../utils/errorHandling';
 import { apiFetch } from '../api';
+import {
+  effectiveDueDate,
+  fromDateInputValue,
+  groupCurrency,
+  isDateInCurrentPeriod,
+  isOverdue,
+  toDateInputValue,
+  type GroupExpense,
+} from '../utils/budget';
+import { CategoryIcon, GroupDot } from './CategoryIcon';
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  IconButton,
+  LoadingRegion,
+  Modal,
+  SectionHeading,
+  SelectField,
+  Skeleton,
+  SkeletonRows,
+  TextField,
+  cn,
+  toast,
+} from './ui';
 
 interface DashboardProps {
   user: User;
   groups: Group[];
+  expenses: GroupExpense[];
+  settlements: Settlement[];
+  loading: boolean;
   onSelectGroup: (id: string) => void;
-  theme: 'light' | 'dark';
+  onCreateGroup: () => void;
+  onChanged: () => void;
 }
 
-interface Alert {
-  id: string;
-  message: string;
-  type: 'warning' | 'info';
+interface BudgetAlert {
   groupId: string;
+  groupName: string;
+  budgetType: NonNullable<Group['budgetType']>;
+  spent: number;
+  limit: number;
+  currency: Currency;
 }
 
-interface DashboardExpense extends Expense {
+interface GroupBalance {
   groupId: string;
+  groupName: string;
+  currency: Currency;
+  /** Positive: you are owed; negative: you owe. */
+  amount: number;
 }
 
-export default function Dashboard({ user, groups, onSelectGroup, theme }: DashboardProps) {
-  const [recentExpenses, setRecentExpenses] = useState<DashboardExpense[]>([]);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [dueItems, setDueItems] = useState<DashboardExpense[]>([]);
+type Totals = Map<Currency, number>;
+
+function addTo(totals: Totals, currency: Currency, amount: number) {
+  totals.set(currency, (totals.get(currency) ?? 0) + amount);
+}
+
+export default function Dashboard({ user, groups, expenses, settlements, loading, onSelectGroup, onCreateGroup, onChanged }: DashboardProps) {
+  const { t, tRich, label, formatCurrency, formatDate, capitalize, currency: preferredCurrency } = useI18n();
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
   const [isGroupsListOpen, setIsGroupsListOpen] = useState(false);
-  
-  // Edit/Delete states
-  const [editingExpense, setEditingExpense] = useState<DashboardExpense | null>(null);
-  const [expenseToDelete, setExpenseToDelete] = useState<DashboardExpense | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [editingExpense, setEditingExpense] = useState<GroupExpense | null>(null);
+  const [expenseToDelete, setExpenseToDelete] = useState<GroupExpense | null>(null);
 
-  const groupsListModalRef = React.useRef<HTMLDivElement>(null);
-  const deleteExpenseModalRef = React.useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (isGroupsListOpen && groupsListModalRef.current) {
-      groupsListModalRef.current.focus();
-    }
-  }, [isGroupsListOpen]);
-
-  useEffect(() => {
-    if (expenseToDelete && deleteExpenseModalRef.current) {
-      deleteExpenseModalRef.current.focus();
-    }
-  }, [expenseToDelete]);
-
-  // Form states for editing
-  const [editAmount, setEditAmount] = useState('');
-  const [editDescription, setEditDescription] = useState('');
-  const [editCategory, setEditCategory] = useState(CATEGORIES[0]);
-  const [editDate, setEditDate] = useState(new Date().toISOString().split('T')[0]);
-
-  useEffect(() => {
-    if (editingExpense) {
-      setEditAmount(editingExpense.amount.toString());
-      setEditDescription(editingExpense.description);
-      setEditCategory(editingExpense.category);
-      setEditDate(editingExpense.date.toDate().toISOString().split('T')[0]);
-    }
-  }, [editingExpense]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setEditingExpense(null);
-        setExpenseToDelete(null);
-        setIsGroupsListOpen(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
-  const handleUpdateExpense = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingExpense) return;
-
-    setIsSaving(true);
-    try {
-      await apiFetch(`/groups/${editingExpense.groupId}/expenses/${editingExpense.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          amount: parseFloat(editAmount),
-          description: editDescription,
-          category: editCategory,
-          date: new Date(editDate).toISOString(),
-        })
-      });
-      setEditingExpense(null);
-      // Let App.tsx re-fetch, or trigger a refresh. For now we reload.
-      window.location.reload();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `groups/${editingExpense.groupId}/expenses/${editingExpense.id}`);
-    } finally {
-      setIsSaving(false);
-    }
+  const visible = useMemo(() => expenses.filter((e) => !hiddenIds.has(e.id)), [expenses, hiddenIds]);
+  const groupName = (id: string) => groups.find((g) => g.id === id)?.name ?? '';
+  const currencyOf = (id: string) => groupCurrency(groups.find((g) => g.id === id), preferredCurrency);
+  const money = (amount: number, groupId: string) => formatCurrency(amount, { currency: currencyOf(groupId) });
+  /** Totals per currency (no FX conversion): "R$ 10,00 · US$ 5.00"; the preferred currency first. */
+  const formatTotals = (totals: Totals) => {
+    const entries = [...totals.entries()].filter(([, v]) => Math.abs(v) >= 0.005);
+    if (entries.length === 0) return formatCurrency(0);
+    entries.sort(([a], [b]) => (a === preferredCurrency ? -1 : b === preferredCurrency ? 1 : a.localeCompare(b)));
+    return entries.map(([c, v]) => formatCurrency(v, { currency: c })).join(' · ');
   };
 
-  const handleDeleteExpense = async () => {
-    if (!expenseToDelete) return;
-
-    setIsDeleting(true);
-    try {
-      await apiFetch(`/groups/${expenseToDelete.groupId}/expenses/${expenseToDelete.id}`, {
-        method: 'DELETE'
-      });
-      setExpenseToDelete(null);
-      window.location.reload();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `groups/${expenseToDelete.groupId}/expenses/${expenseToDelete.id}`);
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
-  const isDateInCurrentPeriod = (date: Date, type: BudgetType) => {
+  const stats = useMemo(() => {
     const now = new Date();
-    if (type === 'total') return true;
-    
-    if (type === 'monthly') {
-      return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
-    }
-    
-    if (type === 'weekly') {
-      const startOfWeek = new Date(now);
-      startOfWeek.setDate(now.getDate() - now.getDay());
-      startOfWeek.setHours(0, 0, 0, 0);
-      
-      const endOfWeek = new Date(startOfWeek);
-      endOfWeek.setDate(startOfWeek.getDate() + 7);
-      
-      return date >= startOfWeek && date < endOfWeek;
-    }
-    
-    return true;
+    const cur = (id: string) => groupCurrency(groups.find((g) => g.id === id), preferredCurrency);
+    const monthSpent: Totals = new Map();
+    visible.filter((e) => isDateInCurrentPeriod(e.date.toDate(), 'monthly', now)).forEach((e) => addTo(monthSpent, cur(e.groupId), e.amount));
+    const pending = visible.filter((e) => e.status === 'pending');
+    const pendingTotal: Totals = new Map();
+    pending.forEach((e) => addTo(pendingTotal, cur(e.groupId), e.amount));
+    const overdue = pending.filter((e) => isOverdue(e, now)).length;
+    const dueItems = [...pending].sort((a, b) => effectiveDueDate(a).getTime() - effectiveDueDate(b).getTime()).slice(0, 4);
+
+    const alerts: BudgetAlert[] = [];
+    groups.forEach((g) => {
+      if (!g.maxBudget) return;
+      const type = g.budgetType || 'total';
+      const spent = visible
+        .filter((e) => e.groupId === g.id && isDateInCurrentPeriod(e.date.toDate(), type, now))
+        .reduce((s, e) => s + e.amount, 0);
+      if (spent > g.maxBudget) alerts.push({ groupId: g.id, groupName: g.name, budgetType: type, spent, limit: g.maxBudget, currency: cur(g.id) });
+    });
+
+    // Settle-up balances per group (same rules as the group page), totals per currency.
+    const balances: GroupBalance[] = [];
+    const owe: Totals = new Map();
+    const owed: Totals = new Map();
+    groups.forEach((g) => {
+      const { net } = settleUp(
+        visible.filter((e) => e.groupId === g.id),
+        settlements.filter((s) => s.groupId === g.id),
+        g.memberIds ?? [],
+      );
+      const amount = fromCents(net.get(user.uid) ?? 0);
+      if (amount === 0) return;
+      const currency = cur(g.id);
+      balances.push({ groupId: g.id, groupName: g.name, currency, amount });
+      addTo(amount > 0 ? owed : owe, currency, Math.abs(amount));
+    });
+    balances.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+
+    return { monthSpent, pendingCount: pending.length, pendingTotal, overdue, dueItems, alerts, recent: visible.slice(0, 8), balances, owe, owed };
+  }, [visible, groups, settlements, preferredCurrency, user.uid]);
+
+  const handleDeleteExpense = () => {
+    if (!expenseToDelete) return;
+    const target = expenseToDelete;
+    const unhide = () =>
+      setHiddenIds((prev) => {
+        const next = new Set(prev);
+        next.delete(target.id);
+        return next;
+      });
+    // Optimistic: hide immediately; the request is sent after the 5 s undo window.
+    setHiddenIds((prev) => new Set(prev).add(target.id));
+    setExpenseToDelete(null);
+    deleteWithUndo({
+      title: t('toast.expenseDeleted'),
+      description: target.description,
+      commit: () => apiFetch(`/groups/${target.groupId}/expenses/${target.id}`, { method: 'DELETE' }),
+      onUndo: unhide,
+      onError: (error) => {
+        unhide();
+        handleFirestoreError(error, OperationType.DELETE, `groups/${target.groupId}/expenses/${target.id}`);
+      },
+      onCommitted: onChanged,
+    });
   };
 
-  useEffect(() => {
-    if (groups.length === 0) {
-      setRecentExpenses([]);
-      setAlerts([]);
-      return;
-    }
+  const firstName = user.displayName?.split(' ')[0] ?? '';
+  const today = capitalize(formatDate(new Date(), { weekday: 'long', day: 'numeric', month: 'long' }));
+  const hasGroups = groups.length > 0;
 
-    const fetchDashboardData = async () => {
-      try {
-        const promises = groups.map(g => apiFetch(`/groups/${g.id}/expenses`).then(exps => ({ groupId: g.id, expenses: exps })));
-        const results = await Promise.all(promises);
-        
-        let allExpenses: DashboardExpense[] = [];
-        const expensesMap = new Map<string, DashboardExpense[]>();
-        
-        results.forEach(res => {
-          const mapped = res.expenses.map((e: any) => ({
-             ...e,
-             groupId: res.groupId,
-             date: { toMillis: () => new Date(e.date).getTime(), toDate: () => new Date(e.date) },
-             dueDate: e.dueDate ? { toMillis: () => new Date(e.dueDate).getTime(), toDate: () => new Date(e.dueDate) } : null
-          }));
-          expensesMap.set(res.groupId, mapped);
-          allExpenses = [...allExpenses, ...mapped];
-        });
+  const kpis: {
+    key: string;
+    label: string;
+    value: string;
+    sub?: React.ReactNode;
+    icon: React.ReactNode;
+    tone: 'brand' | 'neutral' | 'warning' | 'danger' | 'success';
+    onClick?: () => void;
+    actionLabel?: string;
+  }[] = [
+    {
+      key: 'month',
+      label: t('dashboard.kpi.thisMonth'),
+      value: formatTotals(stats.monthSpent),
+      sub: capitalize(formatDate(new Date(), { month: 'long', year: 'numeric' })),
+      icon: <Wallet className="size-5" />,
+      tone: 'brand',
+    },
+    {
+      key: 'pending',
+      label: t('dashboard.kpi.pending'),
+      value: formatTotals(stats.pendingTotal),
+      sub:
+        stats.overdue > 0 ? (
+          <span className="text-red-700 dark:text-red-300 font-medium">{t('dashboard.kpi.overdueCount', { count: stats.overdue })}</span>
+        ) : (
+          t('dashboard.kpi.billsCount', { count: stats.pendingCount })
+        ),
+      icon: <CalendarClock className="size-5" />,
+      tone: stats.overdue > 0 ? 'danger' : stats.pendingCount > 0 ? 'warning' : 'neutral',
+    },
+    {
+      key: 'groups',
+      label: t('dashboard.activeGroups'),
+      value: String(groups.length),
+      icon: <Users className="size-5" />,
+      tone: 'neutral',
+      onClick: hasGroups ? () => (groups.length === 1 ? onSelectGroup(groups[0].id) : setIsGroupsListOpen(true)) : undefined,
+      actionLabel: t('dashboard.selectGroup'),
+    },
+    {
+      key: 'alerts',
+      label: t('dashboard.activeAlerts'),
+      value: String(stats.alerts.length),
+      sub: stats.alerts.length === 0 ? t('dashboard.allOnTrack') : undefined,
+      icon: stats.alerts.length > 0 ? <AlertTriangle className="size-5" /> : <CircleCheck className="size-5" />,
+      tone: stats.alerts.length > 0 ? 'danger' : 'success',
+      onClick: stats.alerts.length > 0 ? () => onSelectGroup(stats.alerts[0].groupId) : undefined,
+      actionLabel: stats.alerts[0] ? stats.alerts[0].groupName : undefined,
+    },
+  ];
 
-        allExpenses.sort((a, b) => b.date.toMillis() - a.date.toMillis());
-        setRecentExpenses(allExpenses.slice(0, 10));
-
-        const now = new Date();
-        const pending = allExpenses
-          .filter(e => e.status === 'pending')
-          .sort((a, b) => {
-            const ad = a.dueDate?.toMillis() || a.date.toMillis();
-            const bd = b.dueDate?.toMillis() || b.date.toMillis();
-            return ad - bd;
-          });
-        setDueItems(pending.slice(0, 5));
-        
-        const newAlerts: Alert[] = [];
-        groups.forEach(g => {
-          if (!g.maxBudget) return;
-          const gExpenses = expensesMap.get(g.id) || [];
-          const currentPeriodExpenses = gExpenses.filter(e => 
-            isDateInCurrentPeriod(e.date.toDate(), g.budgetType || 'total')
-          );
-          const totalSpent = currentPeriodExpenses.reduce((sum, e) => sum + e.amount, 0);
-          if (totalSpent > g.maxBudget) {
-            newAlerts.push({
-              id: `over-budget-${g.id}`,
-              message: `Group "${g.name}" is over its ${g.budgetType || 'total'} budget ($${totalSpent.toFixed(2)} / $${g.maxBudget.toFixed(2)})`,
-              type: 'warning' as const,
-              groupId: g.id
-            });
-          }
-        });
-        
-        setAlerts(newAlerts);
-      } catch (err) {
-        console.error("Dashboard fetch error:", err);
-      }
-    };
-    
-    fetchDashboardData();
-  }, [groups]);
+  const toneIcon: Record<string, string> = {
+    brand: 'bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-200',
+    neutral: 'bg-surface-2 text-fg-muted',
+    warning: 'bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200',
+    danger: 'bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-200',
+    success: 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200',
+  };
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <header className="mb-12 flex flex-col md:flex-row md:items-end justify-between gap-6">
-        <div>
-          <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-zinc-900 dark:text-white mb-3 font-display">
-            Welcome back, <span className="text-indigo-600 dark:text-indigo-400">{user.displayName?.split(' ')[0]}</span>
+    <div>
+      <header className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div className="min-w-0">
+          <p className="eyebrow mb-1">{today}</p>
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-fg font-display">
+            {tRich('dashboard.welcomeBack', { name: <span className="text-brand-700 dark:text-brand-300">{firstName}</span> })}
           </h1>
-          <p className="text-zinc-500 dark:text-zinc-400 font-medium text-lg">Here's what's happening with your shared budgets today.</p>
+          <p className="mt-1 text-fg-muted">{t('dashboard.subtitle')}</p>
         </div>
-        <button 
-          onClick={() => (window as any).openCreateGroupModal?.()}
-          className="flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-2xl text-sm font-bold hover:bg-indigo-700 hover:shadow-xl hover:shadow-indigo-500/40 transition-all shadow-lg shadow-indigo-500/20 active:scale-95"
-        >
-          <Plus className="w-4 h-4" />
-          Create New Group
-        </button>
+        <Button leftIcon={<Plus className="size-4" aria-hidden="true" />} onClick={onCreateGroup} className="w-full sm:w-auto">
+          {t('dashboard.createGroup')}
+        </Button>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
-        <button 
-          onClick={() => {
-            if (groups.length === 0) return;
-            if (groups.length === 1) {
-              onSelectGroup(groups[0].id);
-            } else {
-              setIsGroupsListOpen(true);
+      {/* Key numbers first */}
+      {loading ? (
+        <LoadingRegion label={t('common.loading')} className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 mb-8">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="rounded-card border border-line bg-surface p-4 sm:p-5 space-y-3" aria-hidden="true">
+              <Skeleton className="size-9 rounded-lg" />
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-7 w-28" />
+            </div>
+          ))}
+        </LoadingRegion>
+      ) : (
+        <ul className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 mb-8" aria-label={t('dashboard.kpi.summary')}>
+          {kpis.map((k, i) => {
+            const content = (
+              <>
+                <span className={cn('flex size-9 items-center justify-center rounded-lg mb-3', toneIcon[k.tone])} aria-hidden="true">
+                  {k.icon}
+                </span>
+                <span className="block eyebrow">{k.label}</span>
+                <span className={cn('mt-1 block font-semibold font-display tracking-tight text-fg tabular break-words', i === 0 ? 'text-2xl sm:text-3xl' : 'text-xl sm:text-2xl')}>
+                  {k.value}
+                </span>
+                {k.sub && <span className="mt-1 block text-sm text-fg-subtle truncate">{k.sub}</span>}
+              </>
+            );
+            return (
+              <li key={k.key} className={cn(i === 0 && 'col-span-2 sm:col-span-3 xl:col-span-1', i === 1 && 'col-span-2 sm:col-span-1')}>
+                {k.onClick ? (
+                  <Card as="button" type="button" interactive onClick={k.onClick} className="w-full h-full p-4 sm:p-5" padding="none" aria-label={`${k.label}: ${k.value}. ${k.actionLabel ?? ''}`}>
+                    {content}
+                  </Card>
+                ) : (
+                  <Card className={cn('h-full p-4 sm:p-5', i === 0 && 'border-brand-200 dark:border-brand-500/30')} padding="none">
+                    {content}
+                  </Card>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {!loading && !hasGroups ? (
+        <Card padding="lg">
+          <EmptyState
+            icon={<FolderPlus />}
+            title={t('dashboard.empty.title')}
+            description={t('dashboard.empty.description')}
+            action={
+              <Button leftIcon={<Plus className="size-4" aria-hidden="true" />} onClick={onCreateGroup}>
+                {t('dashboard.empty.cta')}
+              </Button>
             }
-          }}
-          className={`text-left bg-indigo-600 p-8 rounded-[32px] shadow-lg shadow-indigo-500/40 relative overflow-hidden group transition-all ${groups.length > 0 ? 'hover:scale-[1.02] active:scale-95 cursor-pointer' : 'cursor-default'}`}
-        >
-          <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-110" />
-          <div className="relative z-10">
-            <div className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center mb-6">
-              <Users className="w-6 h-6 text-white" />
-            </div>
-            <p className="text-xs font-bold text-indigo-100 uppercase tracking-[0.2em] mb-1">Active Groups</p>
-            <p className="text-4xl font-bold text-white font-display tracking-tight">{groups.length}</p>
-          </div>
-        </button>
+          />
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 lg:gap-8">
+          <div className="xl:col-span-2 space-y-8 min-w-0">
+            {!loading && stats.dueItems.length > 0 && (
+              <section aria-labelledby="dash-due">
+                <SectionHeading id="dash-due" title={t('dashboard.upcomingDue')} icon={<Clock className="size-5" />} />
+                <ul className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {stats.dueItems.map((item) => {
+                    const due = effectiveDueDate(item);
+                    const overdue = isOverdue(item);
+                    return (
+                      <li key={item.id}>
+                        <Card
+                          as="button"
+                          type="button"
+                          interactive
+                          padding="none"
+                          onClick={() => onSelectGroup(item.groupId)}
+                          className={cn('w-full p-4', overdue && 'border-red-200 dark:border-red-500/30')}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="font-semibold text-fg truncate">{item.description}</p>
+                              <p className="text-sm text-fg-subtle truncate">{t('common.inGroup', { group: groupName(item.groupId) })}</p>
+                            </div>
+                            <Badge tone={overdue ? 'danger' : 'warning'} icon={overdue ? <AlertTriangle /> : <Clock />}>
+                              {overdue ? t('dashboard.overdue') : t('dashboard.dueSoon')}
+                            </Badge>
+                          </div>
+                          <div className="mt-3 flex items-end justify-between gap-3">
+                            <p className="text-sm text-fg-muted">{t('common.due', { date: formatDate(due, { day: 'numeric', month: 'short' }) })}</p>
+                            <p className="text-lg font-semibold text-fg tabular">{money(item.amount, item.groupId)}</p>
+                          </div>
+                        </Card>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
 
-        <button 
-          onClick={() => {
-            if (recentExpenses.length === 0) return;
-            onSelectGroup(recentExpenses[0].groupId);
-          }}
-          className={`text-left bg-emerald-600 p-8 rounded-[32px] shadow-lg shadow-emerald-500/40 relative overflow-hidden group transition-all ${recentExpenses.length > 0 ? 'hover:scale-[1.02] active:scale-95 cursor-pointer' : 'cursor-default'}`}
-        >
-          <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-110" />
-          <div className="relative z-10">
-            <div className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center mb-6">
-              <Receipt className="w-6 h-6 text-white" />
-            </div>
-            <p className="text-xs font-bold text-emerald-100 uppercase tracking-[0.2em] mb-1">Recent Expenses</p>
-            <p className="text-4xl font-bold text-white font-display tracking-tight">{recentExpenses.length}</p>
+            <section aria-labelledby="dash-recent">
+              <SectionHeading id="dash-recent" title={t('dashboard.recentActivity')} />
+              <Card padding="none" className="overflow-hidden">
+                {loading ? (
+                  <LoadingRegion label={t('common.loading')}>
+                    <SkeletonRows rows={4} />
+                  </LoadingRegion>
+                ) : stats.recent.length === 0 ? (
+                  <EmptyState
+                    icon={<Receipt />}
+                    title={t('dashboard.noRecent')}
+                    description={t('dashboard.noRecentHint')}
+                    action={
+                      groups[0] && (
+                        <Button variant="secondary" onClick={() => onSelectGroup(groups[0].id)} rightIcon={<ArrowRight className="size-4" aria-hidden="true" />}>
+                          {t('dashboard.openGroup', { name: groups[0].name })}
+                        </Button>
+                      )
+                    }
+                  />
+                ) : (
+                  <ul className="divide-y divide-line">
+                    {stats.recent.map((expense) => {
+                      const mine = expense.paidBy === user.uid;
+                      return (
+                        <li key={expense.id} className="group flex items-center gap-3 sm:gap-4 p-3 sm:p-4 hover:bg-surface-2/60 transition-colors">
+                          <CategoryIcon category={expense.category} />
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-fg truncate">{expense.description}</p>
+                            <p className="text-sm text-fg-subtle truncate">
+                              {formatDate(expense.date.toDate(), { month: 'short', day: 'numeric' })} · {label(CATEGORY_KEYS, expense.category)} ·{' '}
+                              {groupName(expense.groupId)}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="font-semibold text-fg tabular">{money(expense.amount, expense.groupId)}</p>
+                            <p className="text-xs text-fg-subtle">
+                              {expense.status === 'pending' ? (
+                                <span className="text-amber-800 dark:text-amber-300 font-medium">{t('common.pending')}</span>
+                              ) : mine ? (
+                                t('dashboard.youPaid')
+                              ) : (
+                                t('dashboard.someonePaid')
+                              )}
+                            </p>
+                          </div>
+                          {mine && (
+                            <div className="flex items-center shrink-0 -mr-1 pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100 pointer-fine:group-focus-within:opacity-100 transition-opacity">
+                              <IconButton size="sm" label={t('dashboard.editExpense')} icon={<Pencil className="size-4" />} onClick={() => setEditingExpense(expense)} />
+                              <IconButton size="sm" variant="danger" label={t('dashboard.deleteExpense')} icon={<Trash2 className="size-4" />} onClick={() => setExpenseToDelete(expense)} />
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </Card>
+            </section>
           </div>
-        </button>
 
-        <button 
-          onClick={() => {
-            if (alerts.length === 0) return;
-            onSelectGroup(alerts[0].groupId);
-          }}
-          className={`text-left bg-fuchsia-600 p-8 rounded-[32px] shadow-lg shadow-fuchsia-500/40 relative overflow-hidden group transition-all ${alerts.length > 0 ? 'hover:scale-[1.02] active:scale-95 cursor-pointer' : 'cursor-default'}`}
-        >
-          <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-110" />
-          <div className="relative z-10">
-            <div className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center mb-6">
-              <TrendingUp className="w-6 h-6 text-white" />
-            </div>
-            <p className="text-xs font-bold text-fuchsia-100 uppercase tracking-[0.2em] mb-1">Active Alerts</p>
-            <p className="text-4xl font-bold text-white font-display tracking-tight">{alerts.length}</p>
-          </div>
-        </button>
-      </div>
+          <div className="space-y-8 min-w-0">
+          <section aria-labelledby="dash-balances" className="min-w-0">
+            <SectionHeading id="dash-balances" title={t('dashboard.balances')} icon={<HandCoins className="size-5" />} />
+            {loading ? (
+              <Card>
+                <Skeleton className="h-16 w-full" />
+              </Card>
+            ) : (
+              <Card padding="none">
+                <dl className="grid grid-cols-2 divide-x divide-line border-b border-line">
+                  <div className="p-4 min-w-0">
+                    <dt className="eyebrow">{t('dashboard.youOwe')}</dt>
+                    <dd className={cn('mt-1 font-semibold font-display tabular break-words', stats.owe.size ? 'text-red-700 dark:text-red-400' : 'text-fg')}>
+                      {formatTotals(stats.owe)}
+                    </dd>
+                  </div>
+                  <div className="p-4 min-w-0">
+                    <dt className="eyebrow">{t('dashboard.youAreOwed')}</dt>
+                    <dd className={cn('mt-1 font-semibold font-display tabular break-words', stats.owed.size ? 'text-emerald-700 dark:text-emerald-400' : 'text-fg')}>
+                      {formatTotals(stats.owed)}
+                    </dd>
+                  </div>
+                </dl>
+                {stats.balances.length === 0 ? (
+                  <EmptyState compact icon={<CircleCheck />} title={t('dashboard.allSettled')} description={t('dashboard.allSettledHint')} />
+                ) : (
+                  <ul className="p-1.5">
+                    {stats.balances.map((b) => (
+                      <li key={b.groupId}>
+                        <button
+                          type="button"
+                          onClick={() => onSelectGroup(b.groupId)}
+                          className="w-full flex items-center justify-between gap-3 min-h-11 px-2.5 py-2 rounded-control hover:bg-surface-2 text-left transition-colors"
+                        >
+                          <span className="min-w-0">
+                            <span className="block text-sm font-medium text-fg truncate">{b.groupName}</span>
+                            <span className="block text-xs text-fg-subtle">{b.amount > 0 ? t('dashboard.owesYou') : t('dashboard.youOweGroup')}</span>
+                          </span>
+                          <span className={cn('text-sm font-semibold tabular shrink-0', b.amount > 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400')}>
+                            {formatCurrency(Math.abs(b.amount), { currency: b.currency })}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+            )}
+          </section>
 
-      <AnimatePresence>
-        {isGroupsListOpen && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-zinc-950/60 backdrop-blur-sm"
-              onClick={() => setIsGroupsListOpen(false)}
-            />
-            <motion.div 
-              ref={groupsListModalRef}
-              tabIndex={-1}
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="select-group-title"
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-md bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-[32px] shadow-2xl overflow-hidden outline-none"
-            >
-              <div className="p-8">
-                <h3 id="select-group-title" className="text-xl font-bold text-zinc-900 dark:text-white mb-6 font-display">Select a Group</h3>
-                <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
-                {groups.map(group => (
-                  <button
-                    key={group.id}
-                    onClick={() => {
-                      onSelectGroup(group.id);
-                      setIsGroupsListOpen(false);
-                    }}
-                    className="w-full flex items-center justify-between p-4 rounded-2xl bg-zinc-50 dark:bg-white/5 hover:bg-zinc-100 dark:hover:bg-white/10 border border-zinc-100 dark:border-white/5 transition-all text-left group"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div 
-                        className={`w-2 h-2 rounded-full ${
-                          !group.themeColor ? (
-                            group.type === 'personal' ? 'bg-blue-400' : 
-                            group.type === 'household' ? 'bg-emerald-400' : 
-                            'bg-orange-400'
-                          ) : ''
-                        }`} 
-                        style={group.themeColor ? { backgroundColor: group.themeColor } : {}}
-                      />
-                      <span className="font-bold text-zinc-900 dark:text-white">{group.name}</span>
-                    </div>
-                    <ArrowRight className="w-4 h-4 text-zinc-400 dark:text-zinc-500 group-hover:translate-x-1 transition-transform" />
-                  </button>
+          <section aria-labelledby="dash-alerts" className="min-w-0">
+            <SectionHeading id="dash-alerts" title={t('dashboard.budgetAlerts')} />
+            {loading ? (
+              <Card>
+                <Skeleton className="h-16 w-full" />
+              </Card>
+            ) : stats.alerts.length === 0 ? (
+              <Card>
+                <EmptyState compact icon={<CircleCheck />} title={t('dashboard.allOnTrack')} description={t('dashboard.allOnTrackHint')} />
+              </Card>
+            ) : (
+              <ul className="space-y-3">
+                {stats.alerts.map((alert) => (
+                  <motion.li key={alert.groupId} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
+                    <Card as="button" type="button" interactive padding="none" onClick={() => onSelectGroup(alert.groupId)} className="w-full p-4 border-red-200 dark:border-red-500/30">
+                      <div className="flex items-start gap-3">
+                        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-200" aria-hidden="true">
+                          <AlertTriangle className="size-5" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-fg">
+                            {t('dashboard.overBudget', {
+                              name: alert.groupName,
+                              period: label(BUDGET_PERIOD_KEYS, alert.budgetType),
+                              spent: formatCurrency(alert.spent, { currency: alert.currency }),
+                              limit: formatCurrency(alert.limit, { currency: alert.currency }),
+                            })}
+                          </p>
+                          <div className="mt-2 h-1.5 rounded-full bg-red-100 dark:bg-red-500/20 overflow-hidden" aria-hidden="true">
+                            <div className="h-full w-full bg-red-600" />
+                          </div>
+                        </div>
+                      </div>
+                    </Card>
+                  </motion.li>
                 ))}
-              </div>
-            </div>
-          </motion.div>
+              </ul>
+            )}
+          </section>
+          </div>
         </div>
       )}
-    </AnimatePresence>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
-        <div className="lg:col-span-2 space-y-12">
-          {dueItems.length > 0 && (
-            <section>
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-bold tracking-tight text-zinc-900 dark:text-white font-display flex items-center gap-3">
-                  <Clock className="w-6 h-6 text-amber-500" />
-                  Upcoming Due
-                </h2>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {dueItems.map(item => {
-                  const dueDate = item.dueDate?.toDate() || item.date.toDate();
-                  const isOverdue = dueDate < new Date();
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => onSelectGroup(item.groupId)}
-                      className={`p-5 rounded-[24px] border text-left transition-all hover:scale-[1.02] active:scale-95 ${
-                        isOverdue 
-                          ? 'bg-red-50 dark:bg-red-950/20 border-red-100 dark:border-red-900/30' 
-                          : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800'
-                      }`}
-                    >
-                      <div className="flex justify-between items-start mb-3">
-                        <div className={`p-2 rounded-xl ${isOverdue ? 'bg-red-100 dark:bg-red-500/20 text-red-600' : 'bg-amber-100 dark:bg-amber-500/20 text-amber-600'}`}>
-                          <AlertCircle className="w-5 h-5" />
-                        </div>
-                        <span className={`text-[10px] font-bold px-2 py-1 rounded-lg uppercase tracking-wider ${isOverdue ? 'bg-red-600 text-white' : 'bg-amber-500 text-white'}`}>
-                          {isOverdue ? 'Overdue' : 'Due Soon'}
-                        </span>
-                      </div>
-                      <p className="font-bold text-zinc-900 dark:text-white mb-1 truncate">{item.description}</p>
-                      <div className="flex justify-between items-end">
-                        <div>
-                          <p className="text-xs text-zinc-500 dark:text-zinc-400">Due {dueDate.toLocaleDateString()}</p>
-                          <p className="text-[10px] text-zinc-400 mt-0.5">in {groups.find(g => g.id === item.groupId)?.name}</p>
-                        </div>
-                        <p className="text-lg font-bold font-mono text-zinc-900 dark:text-white">
-                          ${formatCurrency(item.amount)}
-                        </p>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          )}
+      <Modal open={isGroupsListOpen} onClose={() => setIsGroupsListOpen(false)} title={t('dashboard.selectGroup')} size="sm">
+        <ul className="space-y-1 pb-2">
+          {groups.map((group) => (
+            <li key={group.id}>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsGroupsListOpen(false);
+                  onSelectGroup(group.id);
+                }}
+                className="group w-full flex items-center gap-3 min-h-12 px-3 rounded-control hover:bg-surface-2 text-left transition-colors"
+              >
+                <GroupDot type={group.type} color={group.themeColor} />
+                <span className="flex-1 font-medium text-fg truncate">{group.name}</span>
+                <ArrowRight className="size-4 text-fg-subtle motion-safe:group-hover:translate-x-0.5 transition-transform" aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Modal>
 
-          <section>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold tracking-tight text-zinc-900 dark:text-white font-display">Recent Activity</h2>
-            </div>
-            <div className="bg-white dark:bg-zinc-900 rounded-[32px] border border-zinc-200 dark:border-zinc-800 shadow-xl shadow-zinc-200/50 dark:shadow-black/20 overflow-hidden">
-              {recentExpenses.length === 0 ? (
-                <div className="p-16 text-center">
-                  <div className="w-16 h-16 bg-zinc-50 dark:bg-zinc-800 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <Receipt className="w-8 h-8 text-zinc-300 dark:text-zinc-600" />
-                  </div>
-                  <p className="text-zinc-500 dark:text-zinc-400 font-medium">No recent expenses found.</p>
-                </div>
-              ) : (
-                <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-                  {recentExpenses.map(expense => (
-                    <div key={expense.id} className="p-4 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between transition-all group hover:bg-zinc-50 dark:hover:bg-zinc-800/50 gap-4">
-                      <div className="flex items-center gap-4 min-w-0">
-                        <div className="w-12 h-12 sm:w-14 sm:h-14 bg-zinc-50 dark:bg-zinc-800 rounded-2xl flex items-center justify-center text-zinc-400 dark:text-zinc-500 transition-all border border-zinc-100 dark:border-transparent shrink-0">
-                          <Receipt className="w-6 h-6 sm:w-7 sm:h-7" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="font-bold text-zinc-900 dark:text-white text-base sm:text-lg truncate">{expense.description}</p>
-                          <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-1">
-                            <span className="text-[9px] sm:text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider px-2 py-0.5 sm:px-2.5 sm:py-1 bg-indigo-50 dark:bg-indigo-500/10 rounded-lg border border-indigo-100 dark:border-indigo-500/20">{expense.category}</span>
-                            {expense.status === 'pending' && (
-                              <span className="text-[9px] sm:text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider px-2 py-0.5 sm:px-2.5 sm:py-1 bg-amber-50 dark:bg-amber-500/10 rounded-lg border border-amber-100 dark:border-amber-500/20 flex items-center gap-1">
-                                <Clock className="w-3 h-3" />
-                                Pending
-                              </span>
-                            )}
-                            <span className="text-[9px] sm:text-[10px] text-zinc-500 font-mono font-bold">
-                              {expense.date.toDate().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                            </span>
-                            <span className="text-[9px] sm:text-[10px] text-zinc-400 font-medium italic truncate max-w-[100px] sm:max-w-none">
-                              in {groups.find(g => g.id === expense.groupId)?.name}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between sm:justify-end gap-4 sm:gap-6 border-t border-zinc-100 dark:border-zinc-800 sm:border-0 pt-3 sm:pt-0 shrink-0">
-                        <div className="text-left sm:text-right min-w-0">
-                          <p 
-                            className={`text-lg sm:text-xl font-bold font-mono truncate ${expense.paidBy === user.uid ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-900 dark:text-white'}`}
-                            title={`$${formatCurrency(expense.amount)}`}
-                          >
-                            ${formatCurrency(expense.amount)}
-                          </p>
-                          <p className="text-[9px] sm:text-[10px] text-zinc-500 uppercase tracking-widest font-bold mt-0.5">
-                            {expense.paidBy === user.uid ? 'You paid' : 'Someone paid'}
-                          </p>
-                        </div>
-                        {expense.paidBy === user.uid && (
-                          <div className="flex items-center gap-1">
-                            <button 
-                              onClick={() => setEditingExpense(expense)}
-                              className="p-2 text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 rounded-xl lg:opacity-0 group-hover:opacity-100 focus:opacity-100 focus:bg-indigo-50 dark:focus:bg-indigo-500/10 transition-all active:scale-90 outline-none focus:ring-2 focus:ring-indigo-500"
-                              title="Edit Expense"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => setExpenseToDelete(expense)}
-                              className="p-2 text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-xl lg:opacity-0 group-hover:opacity-100 focus:opacity-100 focus:bg-red-50 dark:focus:bg-red-500/10 transition-all active:scale-90 outline-none focus:ring-2 focus:ring-red-500"
-                              title="Delete Expense"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </section>
-        </div>
+      <CurrencyScope currency={editingExpense ? currencyOf(editingExpense.groupId) : null}>
+        <EditExpenseModal
+          expense={editingExpense}
+          onClose={() => setEditingExpense(null)}
+          onSaved={() => {
+            setEditingExpense(null);
+            toast.success(t('toast.expenseUpdated'));
+            onChanged();
+          }}
+        />
+      </CurrencyScope>
 
-        <div className="space-y-12">
-          <section>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold tracking-tight text-zinc-900 dark:text-white font-display">Budget Alerts</h2>
-            </div>
-            <div className="space-y-4">
-              {alerts.length === 0 ? (
-                <div className="p-10 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-[32px] text-center shadow-xl shadow-zinc-200/50 dark:shadow-black/20">
-                  <div className="w-12 h-12 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <TrendingDown className="w-6 h-6 text-emerald-500" />
-                  </div>
-                  <p className="text-zinc-500 text-sm font-medium">All budgets on track</p>
-                </div>
-              ) : (
-                alerts.map(alert => (
-                  <motion.div 
-                    key={alert.id}
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className={`p-6 rounded-[32px] border shadow-md transition-all duration-300 ${
-                      alert.type === 'warning' 
-                        ? 'bg-red-50 dark:bg-red-950/80 border-red-200 dark:border-red-900/50 text-red-900 dark:text-red-100 backdrop-blur-sm' 
-                        : 'bg-indigo-600 border-indigo-500 text-white shadow-lg shadow-indigo-500/20'
-                    }`}
-                  >
-                    <div className="flex gap-4">
-                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                        alert.type === 'warning' ? 'bg-red-500/10 dark:bg-red-500/20' : 'bg-white/20'
-                      }`}>
-                        <TrendingUp className={`w-5 h-5 ${alert.type === 'warning' ? 'text-red-600 dark:text-red-400' : 'text-white'}`} />
-                      </div>
-                      <p className="text-sm font-bold leading-relaxed">{alert.message}</p>
-                    </div>
-                  </motion.div>
-                ))
-              )}
-            </div>
-          </section>
-        </div>
-      </div>
-
-      {/* Modals */}
-      <AnimatePresence>
-        {editingExpense && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }} 
-              animate={{ opacity: 1 }} 
-              exit={{ opacity: 0 }}
-              onClick={() => setEditingExpense(null)}
-              className="absolute inset-0 bg-zinc-950/60 backdrop-blur-sm"
-            />
-            <motion.div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="edit-expense-title"
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-md bg-white dark:bg-zinc-900 rounded-[40px] shadow-2xl p-10 outline-none"
-              tabIndex={-1}
-            >
-              <div className="flex items-center justify-between mb-8">
-                <h3 id="edit-expense-title" className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-white font-display">Edit Expense</h3>
-                <button 
-                  onClick={() => setEditingExpense(null)} 
-                  className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full transition-colors outline-none focus:ring-2 focus:ring-indigo-500"
-                  aria-label="Close modal"
-                >
-                  <X className="w-5 h-5 text-zinc-500" />
-                </button>
-              </div>
-              
-              <form onSubmit={handleUpdateExpense} className="space-y-6">
-                <div>
-                  <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-[0.15em] mb-2">Amount</label>
-                  <div className="relative">
-                    <span className="absolute left-5 top-1/2 -translate-y-1/2 text-zinc-400 font-mono font-bold">$</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={editAmount}
-                      onChange={(e) => setEditAmount(e.target.value)}
-                      className="w-full pl-10 pr-5 py-4 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-mono font-bold dark:text-white"
-                      required
-                      autoFocus
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-[0.15em] mb-2">Description</label>
-                  <input
-                    type="text"
-                    value={editDescription}
-                    onChange={(e) => setEditDescription(e.target.value)}
-                    className="w-full px-5 py-4 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium dark:text-white"
-                    placeholder="What was this for?"
-                    required
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-[0.15em] mb-2">Category</label>
-                    <select
-                      value={editCategory}
-                      onChange={(e) => setEditCategory(e.target.value)}
-                      className="w-full px-5 py-4 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium appearance-none dark:text-white"
-                    >
-                      {CATEGORIES.map(cat => (
-                        <option key={cat} value={cat}>{cat}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-[0.15em] mb-2">Date</label>
-                    <input
-                      type="date"
-                      value={editDate}
-                      onChange={(e) => setEditDate(e.target.value)}
-                      className="w-full px-5 py-4 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium dark:text-white"
-                      required
-                    />
-                  </div>
-                </div>
-                <button
-                  type="submit"
-                  disabled={isSaving}
-                  className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold hover:bg-indigo-700 transition-all mt-4 flex items-center justify-center gap-2 disabled:opacity-50 shadow-lg shadow-indigo-500/20 active:scale-95"
-                >
-                  {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Save Changes'}
-                </button>
-              </form>
-            </motion.div>
-          </div>
-        )}
-
-        {expenseToDelete && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }} 
-              animate={{ opacity: 1 }} 
-              exit={{ opacity: 0 }}
-              onClick={() => setExpenseToDelete(null)}
-              className="absolute inset-0 bg-zinc-950/60 backdrop-blur-sm"
-            />
-            <motion.div
-              ref={deleteExpenseModalRef}
-              tabIndex={-1}
-              role="alertdialog"
-              aria-modal="true"
-              aria-labelledby="delete-expense-title"
-              aria-describedby="delete-expense-desc"
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-md bg-white dark:bg-zinc-900 rounded-[40px] shadow-2xl p-10 text-center outline-none"
-            >
-              <div className="w-20 h-20 bg-red-50 dark:bg-red-500/10 rounded-3xl flex items-center justify-center mx-auto mb-8 text-red-600 border border-red-100 dark:border-red-500/20">
-                <Trash2 className="w-10 h-10" />
-              </div>
-              <h3 id="delete-expense-title" className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-white mb-4 font-display">Delete Expense?</h3>
-              <p id="delete-expense-desc" className="text-zinc-500 dark:text-zinc-400 mb-10 leading-relaxed">
-                Are you sure you want to delete this expense? This action cannot be undone.
-              </p>
-              <div className="flex gap-4">
-                <button
-                  onClick={() => setExpenseToDelete(null)}
-                  className="flex-1 py-4 bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-white rounded-2xl font-bold hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-all active:scale-95"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDeleteExpense}
-                  disabled={isDeleting}
-                  className="flex-1 py-4 bg-red-600 text-white rounded-2xl font-bold hover:bg-red-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-lg shadow-red-500/20 active:scale-95"
-                >
-                  {isDeleting ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Delete'}
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      <ConfirmDialog
+        open={!!expenseToDelete}
+        onClose={() => setExpenseToDelete(null)}
+        onConfirm={handleDeleteExpense}
+        title={t('dashboard.deleteTitle')}
+        description={t('dashboard.deleteConfirm')}
+        confirmLabel={t('common.delete')}
+        icon={<Trash2 className="size-5" />}
+      />
     </div>
+  );
+}
+
+function EditExpenseModal({ expense, onClose, onSaved }: { expense: GroupExpense | null; onClose: () => void; onSaved: () => void }) {
+  const { t, label, currencySymbol } = useI18n();
+  const [amount, setAmount] = useState('');
+  const [description, setDescription] = useState('');
+  const [category, setCategory] = useState(CATEGORIES[0]);
+  const [date, setDate] = useState(toDateInputValue(new Date()));
+  const [errors, setErrors] = useState<{ amount?: string; description?: string }>({});
+  const [saving, setSaving] = useState(false);
+  const [loadedId, setLoadedId] = useState<string | null>(null);
+
+  // Load the expense into the form when a new one is opened.
+  if (expense && expense.id !== loadedId) {
+    setLoadedId(expense.id);
+    setAmount(expense.amount.toString());
+    setDescription(expense.description);
+    setCategory(expense.category);
+    setDate(toDateInputValue(expense.date.toDate()));
+    setErrors({});
+  }
+  if (!expense && loadedId !== null) setLoadedId(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!expense) return;
+    const next: typeof errors = {};
+    if (!(parseFloat(amount) > 0)) next.amount = t('validation.amountPositive');
+    if (!description.trim()) next.description = t('validation.descriptionRequired');
+    setErrors(next);
+    if (Object.keys(next).length) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/groups/${expense.groupId}/expenses/${expense.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          amount: parseFloat(amount),
+          description: description.trim(),
+          category,
+          date: fromDateInputValue(date).toISOString(),
+        }),
+      });
+      onSaved();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `groups/${expense.groupId}/expenses/${expense.id}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={!!expense}
+      onClose={onClose}
+      dismissible={!saving}
+      title={t('dashboard.editExpense')}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            {t('common.cancel')}
+          </Button>
+          <Button type="submit" form="dash-edit-expense" loading={saving}>
+            {t('common.saveChanges')}
+          </Button>
+        </>
+      }
+    >
+      <form id="dash-edit-expense" onSubmit={submit} noValidate className="space-y-4 pb-2">
+        <TextField
+          label={t('common.amount')}
+          type="number"
+          inputMode="decimal"
+          step="0.01"
+          min="0"
+          prefix={currencySymbol}
+          className="tabular"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          error={errors.amount}
+          required
+          data-autofocus
+        />
+        <TextField
+          label={t('common.description')}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder={t('dashboard.descriptionPlaceholder')}
+          error={errors.description}
+          required
+        />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <SelectField label={t('common.category')} value={category} onChange={(e) => setCategory(e.target.value)}>
+            {CATEGORIES.map((cat) => (
+              <option key={cat} value={cat}>
+                {label(CATEGORY_KEYS, cat)}
+              </option>
+            ))}
+          </SelectField>
+          <TextField label={t('common.date')} type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+        </div>
+      </form>
+    </Modal>
   );
 }

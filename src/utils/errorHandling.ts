@@ -1,4 +1,6 @@
-import { auth } from '../firebase';
+import { describeError } from '../api';
+import { toast } from '../components/ui/Toast';
+import { t } from '../i18n/core';
 
 export enum OperationType {
   CREATE = 'create',
@@ -9,9 +11,13 @@ export enum OperationType {
   WRITE = 'write',
 }
 
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errMessage = error instanceof Error ? error.message : String(error);
-  console.error(`Operation ${operationType} on ${path} failed:`, errMessage);
-  // Re-throw or show toast as needed
-  alert(`Error: ${errMessage}`);
+/** Log an API failure and show a translated error toast. Returns the message shown. */
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): string {
+  const message = describeError(error);
+  console.error(`Operation ${operationType} on ${path} failed:`, error);
+  toast.error(t('toast.actionFailed'), message);
+  return message;
 }
+
+/** Preferred name going forward. */
+export const reportError = handleFirestoreError;

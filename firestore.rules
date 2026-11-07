@@ -19,7 +19,7 @@
 //   - description: string (optional, 0-500 chars)
 //   - createdBy: string (required, matches auth.uid)
 //   - createdAt: timestamp (required)
-//   - type: string (required, enum: personal, household, trip, other)
+//   - type: string (required, enum: personal, household, trip, other, custom)
 //   - memberIds: list (required, strings of UIDs)
 //   - maxBudget: number (optional, positive)
 //   - budgetType: string (optional, enum: weekly, monthly, total)
@@ -48,6 +48,9 @@
 // ===============================================================
 
 rules_version = '2';
+// NOTE: The app currently stores all data in PostgreSQL via the Express API and does not
+// use Firestore. These rules are kept locked down so that, if Firestore is ever enabled
+// for this project, the client SDK cannot read or write other users' data.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -63,29 +66,43 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isMember(data) {
-      return isAuthenticated() && request.auth.uid in data.get('memberIds', []);
+    function groupDoc(groupId) {
+      return get(/databases/$(database)/documents/groups/$(groupId));
     }
 
     function isGroupMember(groupId) {
-      return isAuthenticated() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.get('memberIds', []);
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/groups/$(groupId)) &&
+        request.auth.uid in groupDoc(groupId).data.get('memberIds', []);
+    }
+
+    function isGroupCreator(groupId) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/groups/$(groupId)) &&
+        groupDoc(groupId).data.get('createdBy', '') == request.auth.uid;
     }
 
     function isGroupAdmin(groupId) {
-      return isAuthenticated() && 
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.get('role', '') == 'admin';
     }
 
     function isValidEmail(email) {
-      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+      return email is string && email.size() <= 254 &&
+             email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
     }
 
     function isValidUrl(url) {
-      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+      return url is string && url.size() <= 2048 && url.matches("^https://.*");
     }
 
     function hasOnlyAllowedFields(fields) {
       return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function unchanged(field) {
+      return request.resource.data.get(field, null) == resource.data.get(field, null);
     }
 
     // ===============================================================
@@ -93,25 +110,36 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidUser(data) {
-      return data.get('uid', '') == request.auth.uid &&
-             data.get('email', '') is string && isValidEmail(data.get('email', '')) &&
+      return hasOnlyAllowedFields(['uid', 'displayName', 'email', 'photoURL', 'createdAt']) &&
+             data.get('uid', '') == request.auth.uid &&
+             isValidEmail(data.get('email', '')) &&
+             // The stored email must be the caller's own verified email.
+             data.get('email', '') == request.auth.token.email &&
+             request.auth.token.email_verified == true &&
              (data.get('displayName', null) == null || (data.get('displayName', '') is string && data.get('displayName', '').size() <= 100)) &&
              (data.get('photoURL', null) == null || isValidUrl(data.get('photoURL', ''))) &&
              data.get('createdAt', null) != null;
     }
 
     function isValidGroup(data) {
-      return data.get('name', '') is string && data.get('name', '').size() >= 1 &&
-             data.get('createdBy', '') == request.auth.uid &&
-             data.get('memberIds', []) is list && data.get('memberIds', []).size() > 0 &&
+      return hasOnlyAllowedFields(['id', 'name', 'description', 'createdBy', 'createdAt', 'type', 'memberIds', 'maxBudget', 'budgetType', 'themeColor']) &&
+             data.get('name', '') is string && data.get('name', '').size() >= 1 && data.get('name', '').size() <= 100 &&
+             (data.get('description', null) == null || (data.get('description', '') is string && data.get('description', '').size() <= 500)) &&
+             data.get('createdBy', '') is string &&
+             data.get('type', '') in ['personal', 'household', 'trip', 'other', 'custom'] &&
+             data.get('memberIds', []) is list && data.get('memberIds', []).size() > 0 && data.get('memberIds', []).size() <= 200 &&
+             (data.get('maxBudget', null) == null || (data.get('maxBudget', 0) is number && data.get('maxBudget', 0) > 0)) &&
+             (data.get('budgetType', null) == null || data.get('budgetType', '') in ['weekly', 'monthly', 'total']) &&
+             (data.get('themeColor', null) == null || (data.get('themeColor', '') is string && data.get('themeColor', '').matches("^#[0-9a-fA-F]{3,8}$"))) &&
              data.get('createdAt', null) != null;
     }
 
     function isValidExpense(data, groupId) {
-      return data.get('amount', 0) is number && data.get('amount', 0) > 0 &&
+      return hasOnlyAllowedFields(['id', 'amount', 'description', 'category', 'paidBy', 'date', 'dueDate', 'status', 'createdAt', 'splitType', 'splitDetails', 'isRecurring', 'recurrenceId']) &&
+             data.get('amount', 0) is number && data.get('amount', 0) > 0 && data.get('amount', 0) <= 1000000000 &&
              data.get('description', '') is string && data.get('description', '').size() >= 1 && data.get('description', '').size() <= 200 &&
-             data.get('category', '') is string &&
-             data.get('paidBy', '') in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds &&
+             data.get('category', '') is string && data.get('category', '').size() >= 1 && data.get('category', '').size() <= 50 &&
+             data.get('paidBy', '') in groupDoc(groupId).data.get('memberIds', []) &&
              data.get('date', null) is timestamp &&
              data.get('createdAt', null) != null &&
              (data.get('splitType', null) == null || data.get('splitType', '') in ['equal', 'percentage', 'exact']) &&
@@ -119,22 +147,16 @@ service cloud.firestore {
              (data.get('dueDate', null) == null || data.get('dueDate', null) is timestamp) &&
              (data.get('isRecurring', null) == null || data.get('isRecurring', false) is bool) &&
              (data.get('recurrenceId', null) == null || (data.get('recurrenceId', '') is string && data.get('recurrenceId', '').size() <= 128)) &&
-             (data.get('splitDetails', null) == null || data.get('splitDetails', {}) is map);
+             (data.get('splitDetails', null) == null || (data.get('splitDetails', {}) is map && data.get('splitDetails', {}).size() <= 200));
     }
 
-    function isValidGroupMember(data) {
-      return data.get('uid', '') is string && data.get('uid', '').size() > 0 &&
+    function isValidGroupMember(data, userId) {
+      return hasOnlyAllowedFields(['uid', 'role', 'joinedAt', 'displayName', 'email']) &&
+             data.get('uid', '') == userId &&
              data.get('role', '') in ['admin', 'member'] &&
              data.get('joinedAt', null) is timestamp &&
              (data.get('displayName', null) == null || (data.get('displayName', '') is string && data.get('displayName', '').size() <= 100)) &&
              (data.get('email', null) == null || isValidEmail(data.get('email', '')));
-    }
-
-    function isAdmin() {
-      return isAuthenticated() &&
-        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
-          (request.auth.token.email == "sodoom@google.com" && request.auth.token.email_verified == true)); // Default admin
     }
 
     // ===============================================================
@@ -146,37 +168,52 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Users collection
+    // Users collection: each user can only see and write their own profile.
     match /users/{userId} {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if isOwner(userId) && isValidUser(request.resource.data) &&
-                    request.resource.data.uid == resource.data.uid;
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && unchanged('uid');
+      allow delete: if false;
     }
 
     // Groups collection
     match /groups/{groupId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidGroup(request.resource.data);
-      allow update: if isGroupAdmin(groupId) && isValidGroup(request.resource.data);
-      allow delete: if isGroupAdmin(groupId);
+      // Only members can read a group (previously: any signed-in user).
+      allow read: if isAuthenticated() && request.auth.uid in resource.data.get('memberIds', []);
+      // The creator must be the caller and must be the only initial member.
+      allow create: if isAuthenticated() && isValidGroup(request.resource.data) &&
+                    request.resource.data.createdBy == request.auth.uid &&
+                    request.resource.data.memberIds == [request.auth.uid];
+      // Admins may edit settings/membership, but ownership is immutable and the owner can't be removed.
+      allow update: if isGroupAdmin(groupId) && isValidGroup(request.resource.data) &&
+                    unchanged('createdBy') && unchanged('createdAt') &&
+                    resource.data.createdBy in request.resource.data.memberIds;
+      // Only the owner can delete the group.
+      allow delete: if isAuthenticated() && resource.data.createdBy == request.auth.uid;
 
       // Expenses subcollection
       match /expenses/{expenseId} {
         allow read: if isGroupMember(groupId);
         allow create: if isGroupMember(groupId) && isValidExpense(request.resource.data, groupId);
-        allow update: if isGroupMember(groupId) && isValidExpense(request.resource.data, groupId);
+        allow update: if isGroupMember(groupId) && isValidExpense(request.resource.data, groupId) &&
+                      unchanged('createdAt');
         allow delete: if isGroupMember(groupId);
       }
 
       // Members subcollection
       match /members/{userId} {
         allow read: if isGroupMember(groupId);
-        // Allow user to add themselves if they are in memberIds or if an admin adds them
-        allow create: if isAuthenticated() && isValidGroupMember(request.resource.data) &&
-                      (isOwner(userId) || isGroupAdmin(groupId));
-        allow update: if isGroupAdmin(groupId) && isValidGroupMember(request.resource.data);
-        allow delete: if isGroupAdmin(groupId) || isOwner(userId);
+        // Admins add members. A user may only add *themselves* when they created the group
+        // (bootstrapping the owner's admin membership) — not to arbitrary groups.
+        allow create: if isValidGroupMember(request.resource.data, userId) &&
+                      (isGroupAdmin(groupId) || (isOwner(userId) && isGroupCreator(groupId)));
+        // Admins change roles; the owner's membership is immutable.
+        allow update: if isGroupAdmin(groupId) && isValidGroupMember(request.resource.data, userId) &&
+                      unchanged('uid') && unchanged('joinedAt') &&
+                      groupDoc(groupId).data.get('createdBy', '') != userId;
+        // Admins remove members, members can leave; the owner can't be removed.
+        allow delete: if (isGroupAdmin(groupId) || isOwner(userId)) &&
+                      groupDoc(groupId).data.get('createdBy', '') != userId;
       }
     }
   }
