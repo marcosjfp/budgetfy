@@ -13,7 +13,7 @@ export default function ConsentBanner() {
     <section
       role="region"
       aria-labelledby="consent-title"
-      className="fixed inset-x-0 bottom-0 z-[70] p-3 pb-safe sm:left-4 sm:right-auto sm:bottom-4 sm:max-w-md sm:p-0"
+      className="fixed inset-x-0 bottom-0 z-[70] p-3 pb-safe sm:left-4 lg:left-[19rem] sm:right-auto sm:bottom-4 sm:max-w-md sm:p-0"
     >
       <div className="rounded-card border border-line bg-surface p-4 shadow-overlay">
         <div className="flex gap-3">
